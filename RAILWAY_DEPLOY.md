@@ -54,11 +54,28 @@ Railway supports two types of monorepos:
 
 ### Method 1: GitHub Integration (Recommended)
 1. Push code to GitHub repository
-2. Connect Railway to GitHub repo
-3. Create new project in Railway
-4. Add two services: frontend and backend
-5. Configure root directories and environment variables
-6. Deploy
+2. Connect Railway to GitHub repo  
+3. Create **TWO SEPARATE** Railway services:
+
+**Backend Service:**
+- Create new service from GitHub repo
+- Set **Root Directory**: `/backend`
+- Railway will auto-detect Node.js and use `npm start`
+- Set environment variables:
+  - `NODE_ENV=production`
+  - `CORS_ORIGIN=[frontend-url-here]`
+
+**Frontend Service:**  
+- Create another service from same GitHub repo
+- Set **Root Directory**: `/frontend`  
+- Railway will auto-detect React and build
+- Set environment variables:
+  - `REACT_APP_BACKEND_URL=[backend-url-here]`
+
+### Important: Service URLs
+After both services deploy, update the environment variables:
+- Backend `CORS_ORIGIN` → Frontend service URL
+- Frontend `REACT_APP_BACKEND_URL` → Backend service URL
 
 ### Method 2: Railway CLI
 ```bash
