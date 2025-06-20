@@ -53,12 +53,36 @@ function shuffle(array) {
 
 let game = null;
 
-function startNewGame() {
+function assignTeams(playerIds) {
+  // Shuffle players for random team assignment
+  const shuffledPlayers = [...playerIds];
+  shuffle(shuffledPlayers);
+  
+  // Team 1: players 0 & 2, Team 2: players 1 & 3
+  return {
+    team1: [shuffledPlayers[0], shuffledPlayers[2]],
+    team2: [shuffledPlayers[1], shuffledPlayers[3]]
+  };
+}
+
+function startNewGame(continueGame = false) {
   const playerIds = Array.from(players.keys());
   const playerHandles = playerIds.map(id => ({
     playerId: id,
     handle: players.get(id)
   }));
+  
+  // Preserve teams if continuing, otherwise assign new teams
+  let teams;
+  let cumulativeTeamScores;
+  if (continueGame && game && game.teams) {
+    teams = game.teams;
+    cumulativeTeamScores = game.cumulativeTeamScores;
+  } else {
+    teams = assignTeams(playerIds);
+    cumulativeTeamScores = { team1: 0, team2: 0 };
+  }
+  
   const deck = createDeck();
   shuffle(deck);
   const hands = {};
@@ -73,6 +97,8 @@ function startNewGame() {
     turn: 0, // index in playerOrder
     scores: Object.fromEntries(playerHandles.map(p => [p.playerId, 0])),
     collected: Object.fromEntries(playerIds.map(id => [id, []])), // cards won by each player (keyed by socket id)
+    teams,
+    cumulativeTeamScores,
     started: true,
   };
   return game;
@@ -85,12 +111,16 @@ function broadcastGameState() {
     turn: game.turn,
     playerHandles: game.playerHandles,
     scores: game.scores,
+    teams: game.teams,
+    cumulativeTeamScores: game.cumulativeTeamScores,
   });
   console.log('Broadcasted game state:', {
     trick: game.trick,
     turn: game.turn,
     playerHandles: game.playerHandles,
     scores: game.scores,
+    teams: game.teams,
+    cumulativeTeamScores: game.cumulativeTeamScores,
   });
 }
 
@@ -139,8 +169,9 @@ function scoreTrick(cards) {
   return 0;
 }
 
-function calculateFinalScores(collected, exposures = {}) {
+function calculateTeamScores(collected, teams, exposures = {}) {
   // collected: { socketId: [cards] }
+  // teams: { team1: [socketId1, socketId2], team2: [socketId3, socketId4] }
   // exposures: { handle: { 'A♥': true, ... } }
   const cardValue = card => {
     const [rank, suit] = [card.slice(0, -1), card.slice(-1)];
@@ -158,8 +189,8 @@ function calculateFinalScores(collected, exposures = {}) {
     return 0;
   };
 
-  // Step 1: Tally base points and special cards
-  const results = {};
+  // Step 1: Calculate individual player results
+  const playerResults = {};
   for (const [socketId, cards] of Object.entries(collected)) {
     const handle = players.get(socketId) || socketId;
     let base = 0;
@@ -176,16 +207,14 @@ function calculateFinalScores(collected, exposures = {}) {
       }
       base += cardValue(card);
     }
-    // Check for all hearts
+    // Check for all hearts (shooting the moon)
     const allHeartRanks = new Set(['A','K','Q','J','10','9','8','7','6','5','4','3','2']);
     if ([...allHeartRanks].every(r => heartRanks.has(r))) {
-      // Shooting the moon
       base = 200;
       if (hasQSpades) base += 100; // Q♠ is +100 if all hearts
       if (hasJDiamonds) base += 100; // J♦ is +100 as usual
-      // 10♣ and exposures handled below
     }
-    results[handle] = {
+    playerResults[socketId] = {
       base,
       hasQSpades,
       hasJDiamonds,
@@ -196,11 +225,10 @@ function calculateFinalScores(collected, exposures = {}) {
     };
   }
 
-  // Step 2: Apply 10♣ doubling/quadrupling and exposures (not implemented yet)
-  for (const [handle, res] of Object.entries(results)) {
+  // Step 2: Apply 10♣ doubling
+  for (const [socketId, res] of Object.entries(playerResults)) {
     let multiplier = 1;
     if (res.has10Clubs) {
-      // If 10♣ and no other scoring cards: +50
       const cardValueFor10 = card => {
         const [rank, suit] = [card.slice(0, -1), card.slice(-1)];
         if (suit === '♥') return true;
@@ -214,18 +242,24 @@ function calculateFinalScores(collected, exposures = {}) {
         multiplier = 2; // 10♣ doubles all scoring cards
       }
     }
-    // Exposures: not implemented (future feature)
     res.final = res.base * multiplier;
   }
 
-  // Step 3: Return final scores keyed by socket.id (playerId)
-  const finalScores = {};
-  for (const [socketId, cards] of Object.entries(collected)) {
-    const handle = players.get(socketId) || socketId;
-    const res = results[handle];
-    finalScores[socketId] = res.final;
+  // Step 3: Calculate team scores
+  const team1Score = teams.team1.reduce((sum, socketId) => sum + (playerResults[socketId]?.final || 0), 0);
+  const team2Score = teams.team2.reduce((sum, socketId) => sum + (playerResults[socketId]?.final || 0), 0);
+
+  // Step 4: Return both individual scores (for UI) and team scores
+  const individualScores = {};
+  for (const socketId of Object.keys(collected)) {
+    individualScores[socketId] = playerResults[socketId]?.final || 0;
   }
-  return finalScores;
+
+  return {
+    individualScores,
+    teamScores: { team1: team1Score, team2: team2Score },
+    playerResults
+  };
 }
 
 function handleTrickCompletion() {
@@ -247,19 +281,57 @@ function handleTrickCompletion() {
   // Emit collected cards (by socket id for frontend to use with playerId)
   io.emit('collected', game.collected);
 
-  // Check for end of game (all hands empty)
+  // Check for end of round (all hands empty)
   const allEmpty = Object.values(game.hands).every(hand => hand.length === 0);
   if (allEmpty) {
-    // Calculate final scores
-    console.log('Collected cards at game end:', JSON.stringify(game.collected, null, 2));
-    const finalScores = calculateFinalScores(game.collected);
-    console.log('Computed final scores:', JSON.stringify(finalScores, null, 2));
+    console.log('Collected cards at round end:', JSON.stringify(game.collected, null, 2));
+    
+    // Calculate team scores for this round
+    const scoreResults = calculateTeamScores(game.collected, game.teams);
+    console.log('Round score results:', JSON.stringify(scoreResults, null, 2));
+    
+    // Update cumulative team scores
+    game.cumulativeTeamScores.team1 += scoreResults.teamScores.team1;
+    game.cumulativeTeamScores.team2 += scoreResults.teamScores.team2;
+    
+    console.log('Updated cumulative team scores:', game.cumulativeTeamScores);
+    
+    // Check for game end conditions (reach +1000 or -1000)
+    const team1Wins = game.cumulativeTeamScores.team1 >= 1000 || game.cumulativeTeamScores.team2 <= -1000;
+    const team2Wins = game.cumulativeTeamScores.team2 >= 1000 || game.cumulativeTeamScores.team1 <= -1000;
+    const gameEnded = team1Wins || team2Wins;
+    
     // Emit collected cards by handle for game over display
     const collectedByHandle = Object.fromEntries(
       Object.entries(game.collected).map(([sid, cards]) => [players.get(sid) || sid, cards])
     );
-    io.emit('game_over', { scores: finalScores, collected: collectedByHandle });
-    console.log('Game over! Final scores:', finalScores);
+    
+    // Prepare team information for the frontend
+    const teamInfo = {
+      team1: {
+        players: game.teams.team1.map(sid => players.get(sid) || sid),
+        roundScore: scoreResults.teamScores.team1,
+        cumulativeScore: game.cumulativeTeamScores.team1
+      },
+      team2: {
+        players: game.teams.team2.map(sid => players.get(sid) || sid),
+        roundScore: scoreResults.teamScores.team2,
+        cumulativeScore: game.cumulativeTeamScores.team2
+      }
+    };
+    
+    io.emit('game_over', { 
+      scores: scoreResults.individualScores, 
+      collected: collectedByHandle,
+      teamInfo,
+      gameEnded,
+      winningTeam: team1Wins ? 1 : (team2Wins ? 2 : null)
+    });
+    
+    console.log('Round over! Team info:', teamInfo);
+    if (gameEnded) {
+      console.log('Game ended! Winning team:', team1Wins ? 1 : 2);
+    }
   }
 
   // Broadcast updated hands and game state
@@ -291,7 +363,7 @@ io.on('connection', (socket) => {
       io.emit('game_started');
       console.log('Game started!');
       // --- Card dealing and game state ---
-      const g = startNewGame();
+      const g = startNewGame(false); // New game with new teams
       // Send each player their hand privately
       for (const pid of g.playerOrder) {
         io.to(pid).emit('deal_hand', g.hands[pid]);
@@ -300,6 +372,24 @@ io.on('connection', (socket) => {
       broadcastGameState();
     } else {
       console.log('Not enough players to start game:', players.size);
+    }
+  });
+
+  socket.on('continue_game', () => {
+    console.log('Received continue_game event from', socket.id);
+    if (players.size === 4 && game && game.teams) {
+      io.emit('game_started');
+      console.log('Game continued with same teams!');
+      // --- Card dealing and game state ---
+      const g = startNewGame(true); // Continue with same teams
+      // Send each player their hand privately
+      for (const pid of g.playerOrder) {
+        io.to(pid).emit('deal_hand', g.hands[pid]);
+        console.log(`Dealt hand to ${players.get(pid)} (${pid}):`, g.hands[pid]);
+      }
+      broadcastGameState();
+    } else {
+      console.log('Cannot continue game - not enough players or no existing game');
     }
   });
 

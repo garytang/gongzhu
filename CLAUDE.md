@@ -71,6 +71,8 @@ cd frontend && npm test                  # React component tests
 - Trick-taking with suit-following rules
 - Scoring: Hearts (-10 to -50), Q♠ (-100), J♦ (+100), 10♣ (doubles/+50)
 - "Shooting the moon" (collecting all hearts) = +200 points
+- Scoring is based on teams of pairs of players; teams are chosen randomly; two players per team and the team score is the summation of individual scores
+- After a game ends, the teams can optionally choose to continue playing; the teams stay the same and the winning team is the team that reaches +1000 points first or is not the team that reaches -1000 points first
 
 **Player Management:**
 - Players register with handle + persistent playerId
@@ -84,6 +86,7 @@ cd frontend && npm test                  # React component tests
 - Live progress display of each player's collected point cards
 - Clickable player tiles to view collected cards in modal
 - Game over modal with team scores and collected cards
+- Visually distinguish individuals that belong to the same team
 
 **Collected Cards System:**
 - Backend tracks collected cards by socket.id in `game.collected` object

@@ -40,7 +40,7 @@ function determineTrickWinner(trick) {
 // Mock players map for testing
 const mockPlayers = new Map();
 
-function calculateFinalScores(collected, exposures = {}) {
+function calculateTeamScores(collected, teams, exposures = {}) {
   const cardValue = card => {
     const [rank, suit] = [card.slice(0, -1), card.slice(-1)];
     if (suit === '♥') {
@@ -56,8 +56,8 @@ function calculateFinalScores(collected, exposures = {}) {
     return 0;
   };
 
-  // Step 1: Tally base points and special cards
-  const results = {};
+  // Step 1: Calculate individual player results
+  const playerResults = {};
   for (const [socketId, cards] of Object.entries(collected)) {
     const handle = mockPlayers.get(socketId) || socketId;
     let base = 0;
@@ -81,7 +81,7 @@ function calculateFinalScores(collected, exposures = {}) {
       if (hasQSpades) base += 100;
       if (hasJDiamonds) base += 100;
     }
-    results[handle] = {
+    playerResults[socketId] = {
       base,
       hasQSpades,
       hasJDiamonds,
@@ -92,8 +92,8 @@ function calculateFinalScores(collected, exposures = {}) {
     };
   }
 
-  // Step 2: Apply 10♣ doubling/quadrupling
-  for (const [handle, res] of Object.entries(results)) {
+  // Step 2: Apply 10♣ doubling
+  for (const [socketId, res] of Object.entries(playerResults)) {
     let multiplier = 1;
     if (res.has10Clubs) {
       const cardValueFor10 = card => {
@@ -112,14 +112,21 @@ function calculateFinalScores(collected, exposures = {}) {
     res.final = res.base * multiplier;
   }
 
-  // Step 3: Return final scores keyed by socket.id (playerId)
-  const finalScores = {};
-  for (const [socketId, cards] of Object.entries(collected)) {
-    const handle = mockPlayers.get(socketId) || socketId;
-    const res = results[handle];
-    finalScores[socketId] = res.final;
+  // Step 3: Calculate team scores
+  const team1Score = teams.team1.reduce((sum, socketId) => sum + (playerResults[socketId]?.final || 0), 0);
+  const team2Score = teams.team2.reduce((sum, socketId) => sum + (playerResults[socketId]?.final || 0), 0);
+
+  // Step 4: Return both individual scores (for UI) and team scores
+  const individualScores = {};
+  for (const socketId of Object.keys(collected)) {
+    individualScores[socketId] = playerResults[socketId]?.final || 0;
   }
-  return finalScores;
+
+  return {
+    individualScores,
+    teamScores: { team1: team1Score, team2: team2Score },
+    playerResults
+  };
 }
 
 describe('Gongzhu Game Logic', () => {
@@ -173,29 +180,50 @@ describe('Gongzhu Game Logic', () => {
     });
   });
 
-  describe('Scoring', () => {
-    it('should score basic heart cards correctly', () => {
+  describe('Team-based Scoring', () => {
+    const mockTeams = {
+      team1: ['player1', 'player3'],
+      team2: ['player2', 'player4']
+    };
+
+    it('should calculate individual scores correctly', () => {
       const collected = {
         'player1': ['A♥', 'K♥', 'Q♥', 'J♥', '10♥'] // -50, -40, -30, -20, -10 = -150
       };
-      const scores = calculateFinalScores(collected);
-      assert.strictEqual(scores['player1'], -150);
+      const result = calculateTeamScores(collected, mockTeams);
+      assert.strictEqual(result.individualScores['player1'], -150);
     });
 
-    it('should score Queen of Spades correctly', () => {
+    it('should calculate team scores correctly', () => {
+      const collected = {
+        'player1': ['A♥', 'K♥'], // -90 points (team1)
+        'player2': ['Q♠'],       // -100 points (team2)  
+        'player3': ['J♦'],       // +100 points (team1)
+        'player4': ['10♣']       // +50 points (team2)
+      };
+      
+      const result = calculateTeamScores(collected, mockTeams);
+      
+      // Team 1: player1 (-90) + player3 (+100) = +10
+      // Team 2: player2 (-100) + player4 (+50) = -50
+      assert.strictEqual(result.teamScores.team1, 10);
+      assert.strictEqual(result.teamScores.team2, -50);
+    });
+
+    it('should handle Queen of Spades correctly', () => {
       const collected = {
         'player1': ['Q♠'] // -100
       };
-      const scores = calculateFinalScores(collected);
-      assert.strictEqual(scores['player1'], -100);
+      const result = calculateTeamScores(collected, mockTeams);
+      assert.strictEqual(result.individualScores['player1'], -100);
     });
 
-    it('should score Jack of Diamonds correctly', () => {
+    it('should handle Jack of Diamonds correctly', () => {
       const collected = {
         'player1': ['J♦'] // +100
       };
-      const scores = calculateFinalScores(collected);
-      assert.strictEqual(scores['player1'], 100);
+      const result = calculateTeamScores(collected, mockTeams);
+      assert.strictEqual(result.individualScores['player1'], 100);
     });
 
     it('should handle shooting the moon', () => {
@@ -203,27 +231,28 @@ describe('Gongzhu Game Logic', () => {
       const collected = {
         'player1': allHearts
       };
-      const scores = calculateFinalScores(collected);
-      assert.strictEqual(scores['player1'], 200);
+      const result = calculateTeamScores(collected, mockTeams);
+      assert.strictEqual(result.individualScores['player1'], 200);
+      assert.strictEqual(result.teamScores.team1, 200);
     });
 
     it('should handle 10 of Clubs doubling', () => {
       const collected = {
         'player1': ['A♥', '10♣'] // -50 * 2 = -100
       };
-      const scores = calculateFinalScores(collected);
-      assert.strictEqual(scores['player1'], -100);
+      const result = calculateTeamScores(collected, mockTeams);
+      assert.strictEqual(result.individualScores['player1'], -100);
     });
 
     it('should handle 10 of Clubs alone', () => {
       const collected = {
         'player1': ['10♣'] // +50 when alone
       };
-      const scores = calculateFinalScores(collected);
-      assert.strictEqual(scores['player1'], 50);
+      const result = calculateTeamScores(collected, mockTeams);
+      assert.strictEqual(result.individualScores['player1'], 50);
     });
 
-    it('should return scores keyed by socket.id (not handle)', () => {
+    it('should return individual scores keyed by socket.id (not handle)', () => {
       // Set up mock players with handles
       mockPlayers.set('socket1', 'Alice');
       mockPlayers.set('socket2', 'Bob');
@@ -233,32 +262,44 @@ describe('Gongzhu Game Logic', () => {
         'socket2': ['Q♠']        // -100 points
       };
       
-      const scores = calculateFinalScores(collected);
+      const teams = {
+        team1: ['socket1'],
+        team2: ['socket2']
+      };
       
-      // Scores should be keyed by socket.id, not handle
-      assert.strictEqual(scores['socket1'], -90);
-      assert.strictEqual(scores['socket2'], -100);
-      assert.strictEqual(scores['Alice'], undefined);
-      assert.strictEqual(scores['Bob'], undefined);
+      const result = calculateTeamScores(collected, teams);
+      
+      // Individual scores should be keyed by socket.id, not handle
+      assert.strictEqual(result.individualScores['socket1'], -90);
+      assert.strictEqual(result.individualScores['socket2'], -100);
+      assert.strictEqual(result.individualScores['Alice'], undefined);
+      assert.strictEqual(result.individualScores['Bob'], undefined);
       
       // Clean up
       mockPlayers.clear();
     });
 
-    it('should handle complex scoring scenario', () => {
+    it('should handle complex team scoring scenario', () => {
       const collected = {
-        'player1': ['A♥', 'K♥', 'Q♥'],  // -120 points
-        'player2': ['Q♠'],             // -100 points  
-        'player3': ['J♦'],             // +100 points
-        'player4': ['10♣']             // +50 points (no other scoring cards)
+        'player1': ['A♥', 'K♥', 'Q♥'],  // -120 points (team1)
+        'player2': ['Q♠'],             // -100 points (team2)  
+        'player3': ['J♦'],             // +100 points (team1)
+        'player4': ['10♣']             // +50 points (team2)
       };
       
-      const scores = calculateFinalScores(collected);
+      const result = calculateTeamScores(collected, mockTeams);
       
-      assert.strictEqual(scores['player1'], -120);
-      assert.strictEqual(scores['player2'], -100);
-      assert.strictEqual(scores['player3'], 100);
-      assert.strictEqual(scores['player4'], 50);
+      // Individual scores
+      assert.strictEqual(result.individualScores['player1'], -120);
+      assert.strictEqual(result.individualScores['player2'], -100);
+      assert.strictEqual(result.individualScores['player3'], 100);
+      assert.strictEqual(result.individualScores['player4'], 50);
+      
+      // Team scores
+      // Team 1: -120 + 100 = -20
+      // Team 2: -100 + 50 = -50
+      assert.strictEqual(result.teamScores.team1, -20);
+      assert.strictEqual(result.teamScores.team2, -50);
     });
   });
 });
@@ -268,5 +309,5 @@ module.exports = {
   getSuit,
   getRank,
   determineTrickWinner,
-  calculateFinalScores
+  calculateTeamScores
 };
