@@ -23,7 +23,10 @@ app.get('/', (req, res) => {
 const players = new Map(); // socket.id -> handle
 
 function broadcastPlayerList() {
-  const playerList = Array.from(players.values());
+  const playerList = Array.from(players.entries()).map(([socketId, handle]) => ({
+    playerId: socketId,
+    handle: handle
+  }));
   console.log('Broadcasting player list:', playerList);
   io.emit('player_list', playerList);
 }
@@ -52,7 +55,10 @@ let game = null;
 
 function startNewGame() {
   const playerIds = Array.from(players.keys());
-  const playerHandles = Array.from(players.values());
+  const playerHandles = playerIds.map(id => ({
+    playerId: id,
+    handle: players.get(id)
+  }));
   const deck = createDeck();
   shuffle(deck);
   const hands = {};
@@ -65,7 +71,7 @@ function startNewGame() {
     hands,
     trick: [],
     turn: 0, // index in playerOrder
-    scores: Object.fromEntries(playerHandles.map(h => [h, 0])),
+    scores: Object.fromEntries(playerHandles.map(p => [p.playerId, 0])),
     collected: Object.fromEntries(playerIds.map(id => [id, []])), // cards won by each player (keyed by socket id)
     started: true,
   };
@@ -125,7 +131,7 @@ function determineTrickWinner(trick) {
       highestIdx = i;
     }
   }
-  return trick[highestIdx].player; // Return handle of winner
+  return trick[highestIdx].player; // Return socket ID of winner
 }
 
 function scoreTrick(cards) {
@@ -225,11 +231,10 @@ function handleTrickCompletion() {
   const trick = game.trick;
   console.log('Trick completed:', trick);
   // Determine winner by suit and rank
-  const winnerHandle = determineTrickWinner(trick);
-  // Find the socket ID for the winner handle
-  const winnerId = game.playerOrder.find(pid => players.get(pid) === winnerHandle);
+  const winnerId = determineTrickWinner(trick);
   if (winnerId) {
     game.turn = game.playerOrder.indexOf(winnerId);
+    const winnerHandle = players.get(winnerId);
     console.log('Trick winner:', winnerHandle, `(socket.id: ${winnerId})`);
     // Add trick cards to winner's collection (keyed by socket id)
     game.collected[winnerId].push(...trick.map(t => t.card));
@@ -237,11 +242,8 @@ function handleTrickCompletion() {
   }
   game.trick = [];
 
-  // Emit collected cards (by handle) for UI progress
-  const collectedByHandle = Object.fromEntries(
-    Object.entries(game.collected).map(([sid, cards]) => [players.get(sid) || sid, cards])
-  );
-  io.emit('collected', collectedByHandle);
+  // Emit collected cards (by socket id for frontend to use with playerId)
+  io.emit('collected', game.collected);
 
   // Check for end of game (all hands empty)
   const allEmpty = Object.values(game.hands).every(hand => hand.length === 0);
@@ -250,6 +252,10 @@ function handleTrickCompletion() {
     console.log('Collected cards at game end:', JSON.stringify(game.collected, null, 2));
     const finalScores = calculateFinalScores(game.collected);
     console.log('Computed final scores:', JSON.stringify(finalScores, null, 2));
+    // Emit collected cards by handle for game over display
+    const collectedByHandle = Object.fromEntries(
+      Object.entries(game.collected).map(([sid, cards]) => [players.get(sid) || sid, cards])
+    );
     io.emit('game_over', { scores: finalScores, collected: collectedByHandle });
     console.log('Game over! Final scores:', finalScores);
   }
@@ -269,7 +275,8 @@ function advanceTurn() {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('register_handle', (handle) => {
+  socket.on('register_handle', (data) => {
+    const handle = typeof data === 'string' ? data : data.handle;
     players.set(socket.id, handle);
     console.log(`Registered handle: ${handle} (socket.id: ${socket.id})`);
     broadcastPlayerList();
@@ -305,8 +312,7 @@ io.on('connection', (socket) => {
     // Remove card from player's hand
     game.hands[socket.id] = game.hands[socket.id].filter(c => c !== card);
     // Add to trick
-    const playerHandle = players.get(socket.id);
-    game.trick.push({ player: playerHandle, card });
+    game.trick.push({ player: socket.id, card });
     // Broadcast updated hands and game state after every play
     for (const pid of game.playerOrder) {
       io.to(pid).emit('deal_hand', game.hands[pid]);
