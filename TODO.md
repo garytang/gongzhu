@@ -1,0 +1,7 @@
+- check that disconnect and reconnect works; game is paused with count down; if user reconnects with same handle, he gets "resume game"? if so, rejoins game. if not, punts everyone back into the lobby
+- lobby is accessible even if you dont enter a handle; it should show the current people in the lobby
+- team scoring and game carry over is broken ✅
+- continue new game doesnt work ✅ 
+- the last card played in trick still doesnt always show
+- team mates must not be adjacent on the table
+- Get rid of git submodules
