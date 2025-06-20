@@ -1,0 +1,14 @@
+{
+  "services": {
+    "backend": {
+      "rootDirectory": "/backend",
+      "startCommand": "npm start",
+      "watchPaths": ["backend/**"]
+    },
+    "frontend": {
+      "rootDirectory": "/frontend",
+      "startCommand": "npm run build",
+      "watchPaths": ["frontend/**"]
+    }
+  }
+}

@@ -53,7 +53,8 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
   const [playerId, setPlayerId] = useState('');
 
   useEffect(() => {
-    const s = io('http://localhost:4000');
+    const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:4000';
+    const s = io(backendUrl);
     setSocket(s);
     
     s.on('connect', () => {
