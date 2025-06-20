@@ -208,7 +208,7 @@ function calculateFinalScores(collected, exposures = {}) {
         return false;
       };
       const scoringCards = res.cards.filter(cardValueFor10);
-      if (scoringCards.length === 1 && res.has10Clubs) {
+      if (scoringCards.length === 0 && res.has10Clubs) {
         res.base = 50;
       } else {
         multiplier = 2; // 10♣ doubles all scoring cards
@@ -218,10 +218,12 @@ function calculateFinalScores(collected, exposures = {}) {
     res.final = res.base * multiplier;
   }
 
-  // Step 3: Return final scores
+  // Step 3: Return final scores keyed by socket.id (playerId)
   const finalScores = {};
-  for (const [handle, res] of Object.entries(results)) {
-    finalScores[handle] = res.final;
+  for (const [socketId, cards] of Object.entries(collected)) {
+    const handle = players.get(socketId) || socketId;
+    const res = results[handle];
+    finalScores[socketId] = res.final;
   }
   return finalScores;
 }
