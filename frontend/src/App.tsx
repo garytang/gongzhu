@@ -83,7 +83,7 @@ function Lobby() {
 }
 
 function GameTable() {
-  const { handle, hand, setHand, gameState, socket, playerId: myPlayerId } = usePlayer();
+  const { handle, hand, gameState, socket, playerId: myPlayerId } = usePlayer();
   const [playedCard, setPlayedCard] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<null | { 
