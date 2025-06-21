@@ -32,50 +32,112 @@ Railway supports two types of monorepos:
 
 ## Configuration Files
 
-### railway.json (Recommended)
+### Service-Specific railway.json Files
+
+Each service has its own `railway.json` configuration file:
+
+#### Backend Configuration (`backend/railway.json`):
 ```json
 {
-  "services": {
-    "backend": {
-      "rootDirectory": "/backend",
-      "startCommand": "npm start",
-      "watchPaths": ["backend/**"]
-    },
-    "frontend": {
-      "rootDirectory": "/frontend", 
-      "startCommand": "npm run build",
-      "watchPaths": ["frontend/**"]
-    }
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "nixpacks"
+  },
+  "deploy": {
+    "startCommand": "npm start",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
   }
 }
 ```
 
+#### Frontend Configuration (`frontend/railway.json`):
+```json
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "nixpacks"
+  },
+  "deploy": {
+    "startCommand": "npx serve -s build -p $PORT",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
+```
+
+**Important Notes:**
+- **No root `railway.json`** - this would force single-service deployment
+- Each service reads its own configuration when Railway sets the root directory
+- Backend uses `npm start` to run the Express server
+- Frontend builds React app and serves static files using `serve`
+
 ## Deployment Process
 
-### Method 1: GitHub Integration (Recommended)
-1. Push code to GitHub repository
-2. Connect Railway to GitHub repo  
-3. Create **TWO SEPARATE** Railway services:
+### Step-by-Step Railway Setup
 
-**Backend Service:**
-- Create new service from GitHub repo
-- Set **Root Directory**: `/backend`
-- Railway will auto-detect Node.js and use `npm start`
-- Set environment variables:
-  - `NODE_ENV=production`
-  - `CORS_ORIGIN=[frontend-url-here]`
+#### Step 1: Create Backend Service
+1. **Go to Railway Dashboard** (https://railway.app)
+2. **Click "New Project"** 
+3. **Select "Deploy from GitHub repo"**
+4. **Choose your repository** (e.g., `username/gongzhu`)
+5. **Service will start building automatically** - it will likely fail initially
+6. **Configure Root Directory:**
+   - Go to **Service Settings** → **Source** (or **Deploy** section)
+   - Find **"Root Directory"** field
+   - Set to: **`/backend`**
+   - Click **Save**
+7. **Set Environment Variables** (Settings → Variables):
+   - `NODE_ENV`: `production`
+   - `CORS_ORIGIN`: `*` (update later with frontend URL)
+8. **Redeploy the service**
 
-**Frontend Service:**  
-- Create another service from same GitHub repo
-- Set **Root Directory**: `/frontend`  
-- Railway will auto-detect React and build
-- Set environment variables:
-  - `REACT_APP_BACKEND_URL=[backend-url-here]`
+#### Step 2: Create Frontend Service  
+1. **Click "New Project"** again
+2. **Select "Deploy from GitHub repo"**
+3. **Choose the SAME repository** (`username/gongzhu`)
+4. **Service will start building** - will likely fail initially
+5. **Configure Root Directory:**
+   - Go to **Service Settings** → **Source** (or **Deploy** section)
+   - Find **"Root Directory"** field  
+   - Set to: **`/frontend`**
+   - Click **Save**
+6. **Set Environment Variables** (Settings → Variables):
+   - `REACT_APP_BACKEND_URL`: `https://your-backend-service.railway.app`
+7. **Redeploy the service**
 
-### Important: Service URLs
-After both services deploy, update the environment variables:
-- Backend `CORS_ORIGIN` → Frontend service URL
-- Frontend `REACT_APP_BACKEND_URL` → Backend service URL
+#### Step 3: Update Cross-References
+Once both services are successfully deployed:
+
+**Backend Service Environment Variables:**
+- Update `CORS_ORIGIN` to your frontend service URL
+- Example: `https://gongzhu-frontend-abc123.railway.app`
+
+**Frontend Service Environment Variables:**
+- Update `REACT_APP_BACKEND_URL` to your backend service URL  
+- Example: `https://gongzhu-backend-def456.railway.app`
+
+#### Step 4: Final Redeploy
+- Redeploy both services after updating environment variables
+- Test the application by visiting the frontend service URL
+
+### Troubleshooting Common Issues
+
+**"No start command found" Error:**
+- Ensure Root Directory is set correctly (`/backend` or `/frontend`)
+- Check that each directory has its own `package.json` with proper dependencies
+
+**"Cannot find module" Errors:**
+- Verify `backend/package.json` includes: `express`, `socket.io`, `cors`
+- Verify `frontend/package.json` includes: `react`, `react-scripts`, `socket.io-client`
+
+**Build Failures:**
+- Check Railway build logs for specific error messages
+- Ensure dependencies are properly listed in respective `package.json` files
+
+**CORS Errors:**
+- Verify `CORS_ORIGIN` in backend matches frontend service URL exactly
+- Ensure both services are deployed and accessible
 
 ### Method 2: Railway CLI
 ```bash
