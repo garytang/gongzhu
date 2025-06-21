@@ -1,13 +1,22 @@
 {
+  "name": "gongzhu-backend",
+  "version": "1.0.0",
+  "description": "Gongzhu card game backend server",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "mocha test/game-logic.test.js",
     "test:integration": "mocha test/socket-integration.test.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "mocha": "^10.8.2"
-  }
+  },
+  "keywords": ["gongzhu", "card-game", "websockets", "backend"],
+  "license": "ISC"
 }
