@@ -13,9 +13,5 @@
   },
   "keywords": ["gongzhu", "card-game", "multiplayer", "websockets"],
   "author": "",
-  "license": "ISC",
-  "workspaces": [
-    "backend",
-    "frontend"
-  ]
+  "license": "ISC"
 }
