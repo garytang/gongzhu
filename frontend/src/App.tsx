@@ -40,7 +40,7 @@ function Lobby() {
   const { handle, setHandle, players, socket } = usePlayer();
   const navigate = useNavigate();
   const [input, setInput] = useState('');
-  const canStart = players.length === 4 && handle; // Must be registered to start
+  const canStart = players.length >= 1 && handle; // Must be registered to start, allow fewer than 4 players
   const isRegistered = Boolean(handle);
 
   useEffect(() => {
@@ -96,6 +96,7 @@ function Lobby() {
       <ul style={{ listStyle: 'none', padding: 0, marginBottom: '1rem' }}>
         {players.map((p: Player, i) => (
           <li key={p.playerId || i} style={{ padding: '0.5rem 0', fontWeight: p.handle === handle ? 'bold' : 'normal' }}>
+            {p.isBot && <span style={{ marginRight: '0.5rem', fontSize: '0.9em' }}>🤖</span>}
             {p.handle}
           </li>
         ))}
@@ -114,9 +115,15 @@ function Lobby() {
         </button>
       )}
       
-      {!canStart && players.length < 4 && (
+      {!canStart && players.length === 0 && (
         <div style={{ marginTop: '0.5rem', color: 'gray' }}>
-          Waiting for {4 - players.length} more players...
+          Register to start the game (bots will fill remaining spots)
+        </div>
+      )}
+      
+      {players.length > 0 && players.length < 4 && (
+        <div style={{ marginTop: '0.5rem', color: 'gray' }}>
+          {4 - players.length} bots will be added to fill the game
         </div>
       )}
     </div>
@@ -314,20 +321,23 @@ function GameTable() {
             style={{
               width: 70,
               height: 70,
-              background: '#f5f5f5',
+              background: p.isBot ? '#f0f8ff' : '#f5f5f5',
               color: '#222',
               borderRadius: 10,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              flexDirection: 'column',
               fontWeight: 'bold',
-              fontSize: 22,
+              fontSize: p.isBot ? 16 : 22,
               cursor: 'pointer',
-              boxShadow: '0 2px 6px rgba(0,0,0,0.08)'
+              boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
+              border: p.isBot ? '1px dashed #aaa' : 'none'
             }}
             onClick={() => setModalPlayer(p.playerId)}
           >
-            {p.handle}
+            {p.isBot && <span style={{ fontSize: 12, marginBottom: 2 }}>🤖</span>}
+            <span style={{ fontSize: p.isBot ? 10 : 22 }}>{p.handle}</span>
           </div>
         ))}
       </div>
@@ -342,7 +352,10 @@ function GameTable() {
             const color = '#222';
             return (
               <div key={p.playerId} style={{ minWidth: 40, textAlign: 'center' }}>
-                <div style={{ fontWeight: p.playerId === myPlayerId ? 'bold' : 'normal', fontSize: 14, background: bg, color, borderRadius: 6, padding: '2px 8px', marginBottom: 2 }}>{p.handle}</div>
+                <div style={{ fontWeight: p.playerId === myPlayerId ? 'bold' : 'normal', fontSize: 14, background: bg, color, borderRadius: 6, padding: '2px 8px', marginBottom: 2 }}>
+                  {p.isBot && <span style={{ marginRight: '4px', fontSize: '12px' }}>🤖</span>}
+                  {p.handle}
+                </div>
                 <div style={{ fontSize: 24, marginTop: 4, color: t && t.card ? getCardColor(t.card) : undefined }}>{t ? t.card : '—'}</div>
               </div>
             );

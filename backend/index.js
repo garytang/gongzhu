@@ -25,11 +25,105 @@ app.get('/', (req, res) => {
 
 // --- Player and Lobby Management ---
 const players = new Map(); // socket.id -> handle
+const bots = new Map(); // botId -> { handle, difficulty, socketId }
+
+// Bot player class for future AI expansion
+class BotPlayer {
+  constructor(id, difficulty = 'easy') {
+    this.id = id;
+    this.handle = `Bot ${id.slice(-4)}`;
+    this.difficulty = difficulty;
+    this.socketId = `bot_${id}`;
+  }
+
+  // Simple AI card selection - can be enhanced later
+  selectCard(hand, trick, gameState) {
+    const validCards = this.getValidCards(hand, trick);
+    
+    switch (this.difficulty) {
+      case 'hard':
+        return this.selectCardHard(validCards, trick, gameState);
+      case 'medium':
+        return this.selectCardMedium(validCards, trick, gameState);
+      case 'easy':
+      default:
+        return this.selectCardEasy(validCards);
+    }
+  }
+
+  getValidCards(hand, trick) {
+    if (trick.length === 0) {
+      return hand; // Can play any card if leading
+    }
+    
+    const ledSuit = getSuit(trick[0].card);
+    const suitCards = hand.filter(card => getSuit(card) === ledSuit);
+    return suitCards.length > 0 ? suitCards : hand;
+  }
+
+  selectCardEasy(validCards) {
+    // Random selection for easy difficulty
+    return validCards[Math.floor(Math.random() * validCards.length)];
+  }
+
+  selectCardMedium(validCards, trick, gameState) {
+    // Slightly smarter: avoid high hearts and Q♠ when possible
+    const dangerousCards = validCards.filter(card => 
+      (card.endsWith('♥') && ['A', 'K', 'Q', 'J'].includes(card.slice(0, -1))) ||
+      card === 'Q♠'
+    );
+    
+    const safeCards = validCards.filter(card => !dangerousCards.includes(card));
+    
+    if (safeCards.length > 0 && trick.length < 3) {
+      return safeCards[Math.floor(Math.random() * safeCards.length)];
+    }
+    
+    return validCards[Math.floor(Math.random() * validCards.length)];
+  }
+
+  selectCardHard(validCards, trick, gameState) {
+    // More sophisticated logic can be added here
+    // For now, same as medium but with preference for J♦ when safe
+    if (validCards.includes('J♦') && trick.length === 3) {
+      return 'J♦'; // Try to win J♦ on last card
+    }
+    
+    return this.selectCardMedium(validCards, trick, gameState);
+  }
+}
+
+let botIdCounter = 0;
+
+function createBot(difficulty = 'easy') {
+  const botId = `bot_${Date.now()}_${botIdCounter++}`;
+  const bot = new BotPlayer(botId, difficulty);
+  bots.set(bot.socketId, bot);
+  
+  // Add bot to players map with its socketId
+  players.set(bot.socketId, bot.handle);
+  
+  console.log(`Created bot: ${bot.handle} (${bot.socketId}) - ${difficulty} difficulty`);
+  return bot;
+}
+
+function removeAllBots() {
+  for (const [socketId, bot] of bots.entries()) {
+    players.delete(socketId);
+    bots.delete(socketId);
+  }
+  console.log('Removed all bots');
+}
+
+function isBot(socketId) {
+  return bots.has(socketId);
+}
 
 function broadcastPlayerList() {
   const playerList = Array.from(players.entries()).map(([socketId, handle]) => ({
     playerId: socketId,
-    handle: handle
+    handle: handle,
+    isBot: isBot(socketId)
   }));
   console.log('Broadcasting player list:', playerList);
   io.emit('player_list', playerList);
@@ -79,6 +173,18 @@ function arrangePlayersForTurnOrder(teams) {
 }
 
 function startNewGame(continueGame = false) {
+  // Get human players (non-bot players)
+  const humanPlayerIds = Array.from(players.keys()).filter(id => !isBot(id));
+  
+  // Auto-fill with bots if needed
+  const neededBots = 4 - humanPlayerIds.length;
+  if (neededBots > 0 && !continueGame) {
+    console.log(`Adding ${neededBots} bots to fill the game`);
+    for (let i = 0; i < neededBots; i++) {
+      createBot('easy');
+    }
+  }
+  
   const playerIds = Array.from(players.keys());
   
   // Preserve teams if continuing, otherwise assign new teams
@@ -155,13 +261,14 @@ function getRank(card) {
 
 function isValidPlay(socket, card) {
   if (!game) return false;
-  const playerIdx = game.playerOrder.indexOf(socket.id);
+  const playerId = socket.id || socket; // Handle both socket object and direct ID for bots
+  const playerIdx = game.playerOrder.indexOf(playerId);
   if (playerIdx !== game.turn) return false; // Not this player's turn
-  if (!game.hands[socket.id] || !game.hands[socket.id].includes(card)) return false; // Card not in hand
+  if (!game.hands[playerId] || !game.hands[playerId].includes(card)) return false; // Card not in hand
   // Suit-following validation
   if (game.trick.length > 0) {
     const ledSuit = getSuit(game.trick[0].card);
-    const hand = game.hands[socket.id];
+    const hand = game.hands[playerId];
     const hasLedSuit = hand.some(c => getSuit(c) === ledSuit);
     if (getSuit(card) !== ledSuit && hasLedSuit) {
       return false; // Must follow suit if possible
@@ -352,11 +459,21 @@ function handleTrickCompletion() {
     if (gameEnded) {
       console.log('Game ended! Winning team:', team1Wins ? 1 : 2);
     }
+  } else {
+    // Continue the game - check if the next player is a bot
+    const currentPlayerId = game.playerOrder[game.turn];
+    if (isBot(currentPlayerId)) {
+      setTimeout(() => {
+        handleBotTurn();
+      }, 1500); // Slightly longer delay after trick completion
+    }
   }
 
   // Broadcast updated hands and game state
   for (const pid of game.playerOrder) {
-    io.to(pid).emit('deal_hand', game.hands[pid]);
+    if (!isBot(pid)) {
+      io.to(pid).emit('deal_hand', game.hands[pid]);
+    }
   }
   broadcastGameState();
 }
@@ -364,6 +481,60 @@ function handleTrickCompletion() {
 function advanceTurn() {
   if (!game) return;
   game.turn = (game.turn + 1) % game.playerOrder.length;
+  
+  // Check if it's a bot's turn and handle it automatically
+  const currentPlayerId = game.playerOrder[game.turn];
+  if (isBot(currentPlayerId)) {
+    setTimeout(() => {
+      handleBotTurn();
+    }, 1000); // 1 second delay to make bot plays feel more natural
+  }
+}
+
+function handleBotTurn() {
+  if (!game) return;
+  
+  const currentPlayerId = game.playerOrder[game.turn];
+  const bot = bots.get(currentPlayerId);
+  
+  if (!bot) return; // Not a bot's turn
+  
+  console.log(`Bot ${bot.handle} is taking turn`);
+  
+  const hand = game.hands[currentPlayerId];
+  const selectedCard = bot.selectCard(hand, game.trick, game);
+  
+  console.log(`Bot ${bot.handle} plays: ${selectedCard}`);
+  
+  // Simulate the card play
+  if (isValidPlay(currentPlayerId, selectedCard)) {
+    // Remove card from bot's hand
+    game.hands[currentPlayerId] = game.hands[currentPlayerId].filter(c => c !== selectedCard);
+    // Add to trick
+    game.trick.push({ player: currentPlayerId, card: selectedCard });
+    
+    // Broadcast updated hands and game state
+    for (const pid of game.playerOrder) {
+      if (!isBot(pid)) {
+        io.to(pid).emit('deal_hand', game.hands[pid]);
+      }
+    }
+    broadcastGameState();
+    
+    // Handle trick completion or advance turn
+    if (game.trick.length === 4) {
+      handleTrickCompletion();
+    } else {
+      advanceTurn();
+      // Broadcast updated hands and game state after advancing turn
+      for (const pid of game.playerOrder) {
+        if (!isBot(pid)) {
+          io.to(pid).emit('deal_hand', game.hands[pid]);
+        }
+      }
+      broadcastGameState();
+    }
+  }
 }
 
 io.on('connection', (socket) => {
@@ -382,19 +553,32 @@ io.on('connection', (socket) => {
 
   socket.on('start_game', () => {
     console.log('Received start_game event from', socket.id);
-    if (players.size === 4) {
+    const humanPlayers = Array.from(players.keys()).filter(id => !isBot(id));
+    
+    if (humanPlayers.length >= 1) {
+      // Remove existing bots before starting new game
+      removeAllBots();
+      broadcastPlayerList();
+      
       io.emit('game_started');
       console.log('Game started!');
       // --- Card dealing and game state ---
       const g = startNewGame(false); // New game with new teams
-      // Send each player their hand privately
+      // Send each player their hand privately (only to human players)
       for (const pid of g.playerOrder) {
-        io.to(pid).emit('deal_hand', g.hands[pid]);
-        console.log(`Dealt hand to ${players.get(pid)} (${pid}):`, g.hands[pid]);
+        if (!isBot(pid)) {
+          io.to(pid).emit('deal_hand', g.hands[pid]);
+          console.log(`Dealt hand to ${players.get(pid)} (${pid}):`, g.hands[pid]);
+        }
       }
       broadcastGameState();
+      
+      // Start bot turn handling if first player is a bot
+      setTimeout(() => {
+        handleBotTurn();
+      }, 1500);
     } else {
-      console.log('Not enough players to start game:', players.size);
+      console.log('Need at least 1 human player to start game');
     }
   });
 
@@ -405,12 +589,19 @@ io.on('connection', (socket) => {
       console.log('Game continued with same teams!');
       // --- Card dealing and game state ---
       const g = startNewGame(true); // Continue with same teams
-      // Send each player their hand privately
+      // Send each player their hand privately (only to human players)
       for (const pid of g.playerOrder) {
-        io.to(pid).emit('deal_hand', g.hands[pid]);
-        console.log(`Dealt hand to ${players.get(pid)} (${pid}):`, g.hands[pid]);
+        if (!isBot(pid)) {
+          io.to(pid).emit('deal_hand', g.hands[pid]);
+          console.log(`Dealt hand to ${players.get(pid)} (${pid}):`, g.hands[pid]);
+        }
       }
       broadcastGameState();
+      
+      // Start bot turn handling if first player is a bot
+      setTimeout(() => {
+        handleBotTurn();
+      }, 1500);
     } else {
       console.log('Cannot continue game - not enough players or no existing game');
     }
@@ -430,7 +621,9 @@ io.on('connection', (socket) => {
     game.trick.push({ player: socket.id, card });
     // Broadcast updated hands and game state after every play
     for (const pid of game.playerOrder) {
-      io.to(pid).emit('deal_hand', game.hands[pid]);
+      if (!isBot(pid)) {
+        io.to(pid).emit('deal_hand', game.hands[pid]);
+      }
     }
     broadcastGameState();
     // If trick is complete (4 cards), resolve trick
@@ -440,7 +633,9 @@ io.on('connection', (socket) => {
       advanceTurn();
       // Broadcast updated hands and game state after advancing turn
       for (const pid of game.playerOrder) {
-        io.to(pid).emit('deal_hand', game.hands[pid]);
+        if (!isBot(pid)) {
+          io.to(pid).emit('deal_hand', game.hands[pid]);
+        }
       }
       broadcastGameState();
     }

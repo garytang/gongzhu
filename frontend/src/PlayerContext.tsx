@@ -5,6 +5,7 @@ import { io, Socket } from 'socket.io-client';
 export interface Player {
   handle: string;
   playerId: string;
+  isBot?: boolean;
 }
 
 interface GameState {
