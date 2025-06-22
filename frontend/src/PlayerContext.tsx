@@ -54,11 +54,25 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:4000';
-    const s = io(backendUrl);
+    const s = io(backendUrl, {
+      transports: ['websocket', 'polling'],
+      upgrade: true,
+      withCredentials: false,
+      forceNew: true
+    });
     setSocket(s);
     
     s.on('connect', () => {
+      console.log('Socket connected:', s.id);
       setPlayerId(s.id || '');
+    });
+    
+    s.on('connect_error', (err) => {
+      console.log('Socket connection error:', err);
+    });
+    
+    s.on('disconnect', (reason) => {
+      console.log('Socket disconnected:', reason);
     });
     
     // Expect playerList as Player[]
