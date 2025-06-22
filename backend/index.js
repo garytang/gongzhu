@@ -62,45 +62,61 @@ function assignTeams(playerIds) {
   const shuffledPlayers = [...playerIds];
   shuffle(shuffledPlayers);
   
-  // Team 1: players 0 & 2, Team 2: players 1 & 3
+  // Assign teams randomly
+  const team1 = [shuffledPlayers[0], shuffledPlayers[1]];
+  const team2 = [shuffledPlayers[2], shuffledPlayers[3]];
+  
   return {
-    team1: [shuffledPlayers[0], shuffledPlayers[2]],
-    team2: [shuffledPlayers[1], shuffledPlayers[3]]
+    team1,
+    team2
   };
+}
+
+function arrangePlayersForTurnOrder(teams) {
+  // Arrange players so teammates are not adjacent
+  // Pattern: team1[0], team2[0], team1[1], team2[1]
+  return [teams.team1[0], teams.team2[0], teams.team1[1], teams.team2[1]];
 }
 
 function startNewGame(continueGame = false) {
   const playerIds = Array.from(players.keys());
-  const playerHandles = playerIds.map(id => ({
-    playerId: id,
-    handle: players.get(id)
-  }));
   
   // Preserve teams if continuing, otherwise assign new teams
   let teams;
   let cumulativeTeamScores;
+  let arrangedPlayerOrder;
+  
   if (continueGame && game && game.teams) {
     teams = game.teams;
     cumulativeTeamScores = game.cumulativeTeamScores;
+    // Maintain the same turn order when continuing
+    arrangedPlayerOrder = game.playerOrder;
   } else {
     teams = assignTeams(playerIds);
     cumulativeTeamScores = { team1: 0, team2: 0 };
+    // Arrange players so teammates are not adjacent
+    arrangedPlayerOrder = arrangePlayersForTurnOrder(teams);
   }
+  
+  const playerHandles = arrangedPlayerOrder.map(id => ({
+    playerId: id,
+    handle: players.get(id)
+  }));
   
   const deck = createDeck();
   shuffle(deck);
   const hands = {};
-  for (let i = 0; i < playerIds.length; i++) {
-    hands[playerIds[i]] = deck.slice(i * 13, (i + 1) * 13);
+  for (let i = 0; i < arrangedPlayerOrder.length; i++) {
+    hands[arrangedPlayerOrder[i]] = deck.slice(i * 13, (i + 1) * 13);
   }
   game = {
-    playerOrder: playerIds,
+    playerOrder: arrangedPlayerOrder,
     playerHandles,
     hands,
     trick: [],
     turn: 0, // index in playerOrder
     scores: Object.fromEntries(playerHandles.map(p => [p.playerId, 0])),
-    collected: Object.fromEntries(playerIds.map(id => [id, []])), // cards won by each player (keyed by socket id)
+    collected: Object.fromEntries(arrangedPlayerOrder.map(id => [id, []])), // cards won by each player (keyed by socket id)
     teams,
     cumulativeTeamScores,
     started: true,
