@@ -368,6 +368,9 @@ function advanceTurn() {
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
+  
+  // Broadcast current player list to new connection
+  broadcastPlayerList();
 
   socket.on('register_handle', (data) => {
     const handle = typeof data === 'string' ? data : data.handle;

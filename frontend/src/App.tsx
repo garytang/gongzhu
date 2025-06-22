@@ -37,9 +37,11 @@ function Login() {
 }
 
 function Lobby() {
-  const { handle, players, socket } = usePlayer();
+  const { handle, setHandle, players, socket } = usePlayer();
   const navigate = useNavigate();
-  const canStart = players.length === 4;
+  const [input, setInput] = useState('');
+  const canStart = players.length === 4 && handle; // Must be registered to start
+  const isRegistered = Boolean(handle);
 
   useEffect(() => {
     if (!socket) return;
@@ -58,26 +60,65 @@ function Lobby() {
     }
   };
 
+  const handleJoin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (input.trim() && socket) {
+      setHandle(input.trim());
+      setInput('');
+    }
+  };
+
   return (
     <div style={{ maxWidth: 400, margin: '2rem auto', textAlign: 'center' }}>
       <h2>Lobby</h2>
-      <div style={{ marginBottom: '1rem' }}>You are: <b>{handle}</b></div>
-      <h3>Players in Room:</h3>
-      <ul style={{ listStyle: 'none', padding: 0 }}>
+      
+      {isRegistered ? (
+        <div style={{ marginBottom: '1rem' }}>You are: <b>{handle}</b></div>
+      ) : (
+        <div style={{ marginBottom: '1rem', padding: '1rem', background: '#f5f5f5', borderRadius: '8px' }}>
+          <h3>Join the Game</h3>
+          <form onSubmit={handleJoin}>
+            <input
+              type="text"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              placeholder="Enter your handle"
+              style={{ padding: '0.5rem', width: '70%', marginRight: '0.5rem' }}
+            />
+            <button type="submit" style={{ padding: '0.5rem 1rem' }}>
+              Join
+            </button>
+          </form>
+        </div>
+      )}
+
+      <h3>Players Ready to Play ({players.length}/4):</h3>
+      <ul style={{ listStyle: 'none', padding: 0, marginBottom: '1rem' }}>
         {players.map((p: Player, i) => (
           <li key={p.playerId || i} style={{ padding: '0.5rem 0', fontWeight: p.handle === handle ? 'bold' : 'normal' }}>
             {p.handle}
           </li>
         ))}
+        {players.length === 0 && (
+          <li style={{ color: 'gray', fontStyle: 'italic' }}>No players registered yet</li>
+        )}
       </ul>
-      <button
-        onClick={handleStart}
-        disabled={!canStart}
-        style={{ marginTop: '1rem', padding: '0.5rem 1rem', opacity: canStart ? 1 : 0.5 }}
-      >
-        Start Game
-      </button>
-      {!canStart && <div style={{ marginTop: '0.5rem', color: 'gray' }}>Waiting for 4 players...</div>}
+
+      {isRegistered && (
+        <button
+          onClick={handleStart}
+          disabled={!canStart}
+          style={{ marginTop: '1rem', padding: '0.5rem 1rem', opacity: canStart ? 1 : 0.5 }}
+        >
+          Start Game
+        </button>
+      )}
+      
+      {!canStart && players.length < 4 && (
+        <div style={{ marginTop: '0.5rem', color: 'gray' }}>
+          Waiting for {4 - players.length} more players...
+        </div>
+      )}
     </div>
   );
 }
