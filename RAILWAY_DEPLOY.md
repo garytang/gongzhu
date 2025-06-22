@@ -87,10 +87,14 @@ Each service has its own `railway.json` configuration file:
    - Find **"Root Directory"** field
    - Set to: **`/backend`**
    - Click **Save**
-7. **Set Environment Variables** (Settings → Variables):
+7. **Enable Public Networking:**
+   - Go to **Service Settings** → **Networking**
+   - Enable **"Public Networking"**
+   - This generates a public URL that browsers can access
+8. **Set Environment Variables** (Settings → Variables):
    - `NODE_ENV`: `production`
    - `CORS_ORIGIN`: `*` (update later with frontend URL)
-8. **Redeploy the service**
+9. **Redeploy the service**
 
 #### Step 2: Create Frontend Service  
 1. **Click "New Project"** again
@@ -102,9 +106,13 @@ Each service has its own `railway.json` configuration file:
    - Find **"Root Directory"** field  
    - Set to: **`/frontend`**
    - Click **Save**
-6. **Set Environment Variables** (Settings → Variables):
+6. **Enable Public Networking:**
+   - Go to **Service Settings** → **Networking**
+   - Enable **"Public Networking"**
+   - This allows users to access your React app in browsers
+7. **Set Environment Variables** (Settings → Variables):
    - `REACT_APP_BACKEND_URL`: `https://your-backend-service.railway.app`
-7. **Redeploy the service**
+8. **Redeploy the service**
 
 #### Step 3: Update Cross-References
 Once both services are successfully deployed:
@@ -164,9 +172,36 @@ railway up
 ### Frontend Service
 - `REACT_APP_BACKEND_URL`: `https://backend-service-name.railway.app`
 
+## Railway Networking Configuration
+
+### Public vs Private Networking
+
+**Both services MUST have Public Networking enabled** for this application:
+
+#### Why Backend Needs Public Networking:
+- **Direct WebSocket Connections**: Users' browsers connect directly to the backend for Socket.IO
+- **Real-time Communication**: WebSocket connections bypass the frontend service
+- **API Access**: Frontend JavaScript makes HTTP requests to backend from browsers
+
+#### Why Frontend Needs Public Networking:
+- **User Access**: Users need to access the React app in their browsers
+- **Static File Serving**: HTML, CSS, and JavaScript files must be publicly accessible
+
+#### Network Flow:
+```
+User's Browser → Frontend Service (public URL) → Loads React App
+User's Browser → Backend Service (public URL) → WebSocket connection for game
+```
+
+### Railway Private Networking
+Private networking (internal Railway URLs) is **not sufficient** because:
+- Private URLs only work between Railway services
+- User browsers cannot access private Railway networks
+- WebSocket connections from browsers require public endpoints
+
 ## WebSocket Configuration
 
-Railway fully supports WebSocket connections. No special configuration needed for Socket.IO - it works out of the box.
+Railway fully supports WebSocket connections. No special configuration needed for Socket.IO - it works out of the box with public networking enabled.
 
 ## Best Practices
 
