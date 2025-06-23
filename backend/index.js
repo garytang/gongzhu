@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { LLMBotPlayer } = require('./llm-bot-player');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,9 +24,98 @@ app.get('/', (req, res) => {
   res.send('Gongzhu backend is running!');
 });
 
+// Bot management endpoints
+app.post('/api/bots/create', (req, res) => {
+  try {
+    const { type = 'regular', difficulty = 'easy', llmConfig = {} } = req.body;
+    
+    let bot;
+    if (type === 'llm') {
+      bot = createLLMBot(llmConfig);
+    } else {
+      bot = createBot(difficulty);
+    }
+    
+    broadcastPlayerList();
+    
+    res.json({
+      success: true,
+      bot: {
+        id: bot.socketId,
+        handle: bot.handle,
+        type: type,
+        ...(type === 'llm' ? { provider: bot.llmProvider } : { difficulty })
+      }
+    });
+  } catch (error) {
+    console.error('Error creating bot:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.delete('/api/bots/clear', (req, res) => {
+  try {
+    removeAllBots();
+    broadcastPlayerList();
+    
+    res.json({
+      success: true,
+      message: 'All bots removed'
+    });
+  } catch (error) {
+    console.error('Error removing bots:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/bots/list', (req, res) => {
+  try {
+    const botList = [];
+    
+    // Regular bots
+    for (const [socketId, bot] of bots.entries()) {
+      botList.push({
+        id: socketId,
+        handle: bot.handle,
+        type: 'regular',
+        difficulty: bot.difficulty
+      });
+    }
+    
+    // LLM bots
+    for (const [socketId, bot] of llmBots.entries()) {
+      botList.push({
+        id: socketId,
+        handle: bot.handle,
+        type: 'llm',
+        provider: bot.llmProvider,
+        model: bot.llmModel
+      });
+    }
+    
+    res.json({
+      success: true,
+      bots: botList
+    });
+  } catch (error) {
+    console.error('Error listing bots:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // --- Player and Lobby Management ---
 const players = new Map(); // socket.id -> handle
 const bots = new Map(); // botId -> { handle, difficulty, socketId }
+const llmBots = new Map(); // botId -> LLMBotPlayer instance
 let trickDisplayDelay = false; // Flag to prevent new card plays during trick display
 
 // Bot player class for future AI expansion
@@ -108,16 +198,36 @@ function createBot(difficulty = 'easy') {
   return bot;
 }
 
+function createLLMBot(llmConfig = {}) {
+  const botId = `llm_bot_${Date.now()}_${botIdCounter++}`;
+  const bot = new LLMBotPlayer(botId, llmConfig);
+  llmBots.set(bot.socketId, bot);
+  
+  // Add bot to players map with its socketId
+  players.set(bot.socketId, bot.handle);
+  
+  console.log(`Created LLM bot: ${bot.handle} (${bot.socketId}) - ${bot.llmProvider} provider`);
+  return bot;
+}
+
 function removeAllBots() {
   for (const [socketId, bot] of bots.entries()) {
     players.delete(socketId);
     bots.delete(socketId);
   }
+  for (const [socketId, bot] of llmBots.entries()) {
+    players.delete(socketId);
+    llmBots.delete(socketId);
+  }
   console.log('Removed all bots');
 }
 
 function isBot(socketId) {
-  return bots.has(socketId);
+  return bots.has(socketId) || llmBots.has(socketId);
+}
+
+function isLLMBot(socketId) {
+  return llmBots.has(socketId);
 }
 
 function broadcastPlayerList() {
@@ -182,7 +292,16 @@ function startNewGame(continueGame = false) {
   if (neededBots > 0 && !continueGame) {
     console.log(`Adding ${neededBots} bots to fill the game`);
     for (let i = 0; i < neededBots; i++) {
-      createBot('easy');
+      // Create LLM bot if Anthropic API key is available, otherwise regular bot
+      if (process.env.ANTHROPIC_API_KEY) {
+        createLLMBot({
+          provider: 'anthropic',
+          handle: `Claude Bot ${i + 1}`,
+          fallbackDifficulty: 'hard'
+        });
+      } else {
+        createBot('easy');
+      }
     }
   }
   
@@ -497,48 +616,87 @@ function advanceTurn() {
   }
 }
 
-function handleBotTurn() {
+async function handleBotTurn() {
   if (!game) return;
   
   const currentPlayerId = game.playerOrder[game.turn];
-  const bot = bots.get(currentPlayerId);
+  let bot = bots.get(currentPlayerId) || llmBots.get(currentPlayerId);
   
   if (!bot) return; // Not a bot's turn
   
   console.log(`Bot ${bot.handle} is taking turn`);
   
   const hand = game.hands[currentPlayerId];
-  const selectedCard = bot.selectCard(hand, game.trick, game);
+  let selectedCard;
   
-  console.log(`Bot ${bot.handle} plays: ${selectedCard}`);
-  
-  // Simulate the card play
-  if (isValidPlay(currentPlayerId, selectedCard)) {
-    // Remove card from bot's hand
-    game.hands[currentPlayerId] = game.hands[currentPlayerId].filter(c => c !== selectedCard);
-    // Add to trick
-    game.trick.push({ player: currentPlayerId, card: selectedCard });
-    
-    // Broadcast updated hands and game state
-    for (const pid of game.playerOrder) {
-      if (!isBot(pid)) {
-        io.to(pid).emit('deal_hand', game.hands[pid]);
-      }
-    }
-    broadcastGameState();
-    
-    // Handle trick completion or advance turn
-    if (game.trick.length === 4) {
-      handleTrickCompletion();
+  try {
+    // LLM bots return a promise, regular bots return directly
+    if (isLLMBot(currentPlayerId)) {
+      selectedCard = await bot.selectCard(hand, game.trick, game);
     } else {
-      advanceTurn();
-      // Broadcast updated hands and game state after advancing turn
+      selectedCard = bot.selectCard(hand, game.trick, game);
+    }
+    
+    console.log(`Bot ${bot.handle} plays: ${selectedCard}`);
+    
+    // Simulate the card play
+    if (isValidPlay(currentPlayerId, selectedCard)) {
+      // Remove card from bot's hand
+      game.hands[currentPlayerId] = game.hands[currentPlayerId].filter(c => c !== selectedCard);
+      // Add to trick
+      game.trick.push({ player: currentPlayerId, card: selectedCard });
+      
+      // Broadcast updated hands and game state
       for (const pid of game.playerOrder) {
         if (!isBot(pid)) {
           io.to(pid).emit('deal_hand', game.hands[pid]);
         }
       }
       broadcastGameState();
+      
+      // Handle trick completion or advance turn
+      if (game.trick.length === 4) {
+        handleTrickCompletion();
+      } else {
+        advanceTurn();
+        // Broadcast updated hands and game state after advancing turn
+        for (const pid of game.playerOrder) {
+          if (!isBot(pid)) {
+            io.to(pid).emit('deal_hand', game.hands[pid]);
+          }
+        }
+        broadcastGameState();
+      }
+    }
+  } catch (error) {
+    console.error(`Bot ${bot.handle} failed to select card:`, error);
+    // Fallback to random valid card
+    const validCards = bot.getValidCards ? bot.getValidCards(hand, game.trick) : hand;
+    selectedCard = validCards[Math.floor(Math.random() * validCards.length)];
+    console.log(`Bot ${bot.handle} plays fallback card: ${selectedCard}`);
+    
+    if (isValidPlay(currentPlayerId, selectedCard)) {
+      game.hands[currentPlayerId] = game.hands[currentPlayerId].filter(c => c !== selectedCard);
+      game.trick.push({ player: currentPlayerId, card: selectedCard });
+      
+      for (const pid of game.playerOrder) {
+        if (!isBot(pid)) {
+          io.to(pid).emit('deal_hand', game.hands[pid]);
+        }
+      }
+      broadcastGameState();
+      
+      if (game.trick.length === 4) {
+        handleTrickCompletion();
+      } else {
+        advanceTurn();
+        for (const pid of game.playerOrder) {
+          if (!isBot(pid)) {
+            io.to(pid).emit('deal_hand', game.hands[pid]);
+          }
+        }
+        broadcastGameState();
+      }
     }
   }
 }

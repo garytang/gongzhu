@@ -55,13 +55,16 @@ cd frontend && npm run build  # Production build
 # Individual test suites
 cd backend && npm test                    # Unit tests for game logic
 cd backend && npm run test:integration   # Socket.IO integration tests
+cd backend && npm run test:llm           # LLM bot player tests
+cd backend && npm run test:all           # All backend tests
 cd frontend && npm test                  # React component tests
 ```
 
 **Test Coverage:**
-- Backend: Game logic, scoring, trick resolution, Socket.IO communication
+- Backend: Game logic, scoring, trick resolution, Socket.IO communication, LLM bot integration
 - Frontend: Component rendering, user interactions, turn logic, Socket.IO integration
 - Integration: Real-time multiplayer communication
+- LLM Bots: Card selection, strategy, provider integration, fallback mechanisms
 - E2E: Placeholder for future Playwright/Cypress tests
 
 ## Key Implementation Details
@@ -94,6 +97,16 @@ cd frontend && npm test                  # React component tests
 - Frontend displays only point cards (♥, Q♠, J♦, 10♣) with proper color coding
 - During gameplay: collected cards keyed by socket.id for real-time display
 - Game over: collected cards converted to player handles for final summary
+
+**LLM Bot System:**
+- Supports multiple LLM providers: Anthropic Claude, Google Gemini, OpenRouter
+- Intelligent game analysis considering hand, trick state, collected cards, team dynamics
+- Robust fallback to enhanced rule-based AI when LLM fails
+- Game memory tracking played cards and player tendencies
+- Strategic decision making with various gameplay strategies
+- API endpoints for bot management: `/api/bots/create`, `/api/bots/list`, `/api/bots/clear`
+- Environment variables for API keys: `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`
+- Seamless integration with existing Socket.IO game flow
 
 ## Development Notes
 
