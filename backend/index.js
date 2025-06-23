@@ -26,6 +26,7 @@ app.get('/', (req, res) => {
 // --- Player and Lobby Management ---
 const players = new Map(); // socket.id -> handle
 const bots = new Map(); // botId -> { handle, difficulty, socketId }
+let trickDisplayDelay = false; // Flag to prevent new card plays during trick display
 
 // Bot player class for future AI expansion
 class BotPlayer {
@@ -403,10 +404,14 @@ function handleTrickCompletion() {
     game.collected[winnerId].push(...trick.map(t => t.card));
     // No per-trick scoring
   }
-  game.trick = [];
+  // Implement 1s display delay before clearing trick and continuing
+  trickDisplayDelay = true;
+  setTimeout(() => {
+    trickDisplayDelay = false;
+    game.trick = [];
 
-  // Emit collected cards (by socket id for frontend to use with playerId)
-  io.emit('collected', game.collected);
+    // Emit collected cards (by socket id for frontend to use with playerId)
+    io.emit('collected', game.collected);
 
   // Check for end of round (all hands empty)
   const allEmpty = Object.values(game.hands).every(hand => hand.length === 0);
@@ -476,6 +481,7 @@ function handleTrickCompletion() {
     }
   }
   broadcastGameState();
+  }, 1000); // 1s display delay to show completed trick
 }
 
 function advanceTurn() {
@@ -610,6 +616,10 @@ io.on('connection', (socket) => {
   socket.on('play_card', (card) => {
     console.log(`Received play_card from ${socket.id}: ${card}`);
     if (!game) return;
+    if (trickDisplayDelay) {
+      console.log('Card play blocked during trick display delay');
+      return;
+    }
     if (!isValidPlay(socket, card)) {
       console.log('Invalid play by', socket.id, card);
       socket.emit('invalid_play', card);

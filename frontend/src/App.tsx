@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { PlayerProvider, usePlayer } from './PlayerContext';
 import type { Player } from './PlayerContext';
@@ -147,8 +147,6 @@ function GameTable() {
   const [collected, setCollected] = useState<Record<string, string[]>>({});
   const [modalPlayer, setModalPlayer] = useState<string | null>(null);
   const [displayedTrick, setDisplayedTrick] = useState<any[]>([]);
-  const trickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const [isShowingCompletedTrick, setIsShowingCompletedTrick] = useState(false);
 
   useEffect(() => {
     setPlayedCard(null);
@@ -157,26 +155,10 @@ function GameTable() {
   useEffect(() => {
     if (!gameState) return;
     
-    // If we have a completed trick (4 cards displayed) and the server has cleared it (0 cards),
-    // start the display timeout but don't immediately clear the displayed trick
-    if (displayedTrick.length === 4 && gameState.trick.length === 0 && !isShowingCompletedTrick) {
-      if (trickTimeoutRef.current) clearTimeout(trickTimeoutRef.current);
-      setIsShowingCompletedTrick(true);
-      trickTimeoutRef.current = setTimeout(() => {
-        setDisplayedTrick([]);
-        setIsShowingCompletedTrick(false);
-        trickTimeoutRef.current = null;
-      }, 2000);
-      return; // Don't update displayedTrick to gameState.trick yet
-    }
-    
-    // For all other cases, sync displayedTrick with gameState.trick
-    // unless we're showing a completed trick
-    if (!isShowingCompletedTrick) {
-      setDisplayedTrick(gameState.trick);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameState?.trick, isShowingCompletedTrick]);
+    // Simply sync displayedTrick with gameState.trick
+    // Backend now handles the 1s display delay
+    setDisplayedTrick(gameState.trick);
+  }, [gameState]);
 
   useEffect(() => {
     if (!socket) return;
@@ -224,14 +206,6 @@ function GameTable() {
     };
   }, [socket]);
 
-  // Cleanup timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (trickTimeoutRef.current) {
-        clearTimeout(trickTimeoutRef.current);
-      }
-    };
-  }, []);
 
   if (!gameState) {
     return <div style={{ textAlign: 'center', marginTop: '2rem' }}>Waiting for game state...</div>;
