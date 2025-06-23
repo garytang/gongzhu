@@ -52,6 +52,7 @@ GAME RULES:
 - Scoring: Hearts are negative (-10 to -50), Q♠ is -100, J♦ is +100, 10♣ doubles your score or gives +50 if no other scoring cards
 - "Shooting the moon" (getting all hearts) gives +200 points
 - Game is played in teams: Team 1 (${team1Players.join(', ')}) vs Team 2 (${team2Players.join(', ')})
+- The goal is to maximize the points on your team and minimizing the points on the opposing team
 
 CURRENT SITUATION:
 Your hand: ${hand.join(', ')}
@@ -70,16 +71,16 @@ CURRENT SCORES:
 ${playerHandles.map(p => `${p.handle}: ${scores[p.playerId] || 0}`).join(', ')}
 
 Please choose one card from your hand to play. Consider:
-1. Must follow suit if you have cards of the led suit
-2. Try to avoid taking penalty cards (hearts, Q♠) unless strategic
+1. Must follow suit if you have cards of the led suit; otherwise play a card such that your opponents will take negative point cards and your teammate will take positive point cards when possible.
+2. Try to avoid taking penalty cards (hearts, Q♠) unless strategic e.g. shooting the moon.
 3. Try to win J♦ for bonus points when safe
 4. Consider your teammate's position and needs
 5. Be aware of 10♣ doubling effects
-6. Consider what other players might be trying to attempt e.g. shoot the moon
+6. Consider the strategy of players from the opposing team and foil their goals if possible
 
 Please provide your response in the following format:
 <reasoning>
-Brief strategic reasoning (1-2 sentences max)
+Brief strategic reasoning (1-3 sentences max)
 </reasoning>
 
 <played_card>
@@ -95,7 +96,7 @@ class AnthropicProvider extends LLMProvider {
   constructor(config = {}) {
     super(config);
     this.apiKey = config.apiKey || process.env.ANTHROPIC_API_KEY;
-    this.model = config.model || 'claude-3-5-haiku-20241022';
+    this.model = config.model || process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-20241022';
     this.baseURL = 'https://api.anthropic.com/v1/messages';
   }
 
@@ -138,7 +139,7 @@ class GoogleProvider extends LLMProvider {
   constructor(config = {}) {
     super(config);
     this.apiKey = config.apiKey || process.env.GOOGLE_API_KEY;
-    this.model = config.model || 'gemini-1.5-flash';
+    this.model = config.model || process.env.GOOGLE_MODEL || 'gemini-1.5-flash';
     this.baseURL = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`;
   }
 
@@ -180,7 +181,7 @@ class OpenRouterProvider extends LLMProvider {
   constructor(config = {}) {
     super(config);
     this.apiKey = config.apiKey || process.env.OPENROUTER_API_KEY;
-    this.model = config.model || 'anthropic/claude-3-haiku';
+    this.model = config.model || process.env.OPENROUTER_MODEL || 'anthropic/claude-3-haiku';
     this.baseURL = 'https://openrouter.ai/api/v1/chat/completions';
   }
 

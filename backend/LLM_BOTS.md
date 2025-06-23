@@ -23,12 +23,18 @@ Create a `.env` file in the backend directory with your API keys:
 ```bash
 # Anthropic Claude API
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
+# Optional: Specify model (default: claude-3-5-haiku-20241022)
+ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 
 # Google Gemini API  
 GOOGLE_API_KEY=your_google_api_key_here
+# Optional: Specify model (default: gemini-1.5-flash)
+GOOGLE_MODEL=gemini-1.5-pro
 
 # OpenRouter API (supports multiple models)
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+# Optional: Specify model (default: anthropic/claude-3-haiku)
+OPENROUTER_MODEL=anthropic/claude-3-5-sonnet
 ```
 
 ### API Key Sources
@@ -36,6 +42,24 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 - **Anthropic**: Get from [Anthropic Console](https://console.anthropic.com/)
 - **Google**: Get from [Google AI Studio](https://makersuite.google.com/app/apikey)
 - **OpenRouter**: Get from [OpenRouter](https://openrouter.ai/keys)
+
+### Model Configuration
+
+You can customize which models to use by setting environment variables. If not specified, sensible defaults are used:
+
+**Anthropic Models:**
+- `claude-3-5-haiku-20241022` (default) - Fast, cost-effective
+- `claude-3-5-sonnet-20241022` - Balanced performance and capability
+- `claude-3-opus-20240229` - Most capable, slower and more expensive
+
+**Google Models:**
+- `gemini-1.5-flash` (default) - Fast and efficient
+- `gemini-1.5-pro` - More capable, slower
+
+**OpenRouter Models:**
+- `anthropic/claude-3-haiku` (default) - Fast Claude via OpenRouter
+- `anthropic/claude-3-5-sonnet` - Better Claude via OpenRouter
+- Many other models available through OpenRouter
 
 ## Usage
 
