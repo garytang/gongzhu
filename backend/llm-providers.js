@@ -48,8 +48,8 @@ class LLMProvider {
 
 GAME RULES:
 - Follow suit if possible, otherwise play any card
-- Highest card of the led suit wins the trick
-- Scoring: Hearts are negative (-10 to -50), Q♠ is -100, J♦ is +100, 10♣ doubles your score or gives +50 if no other scoring cards
+- Player with highest card wins the trick; they collect all the cards in the trick and are scored according to the cards
+- Scoring: Hearts are negative (-10 to -50), Q♠ is -100, J♦ is +100, 10♣ doubles your score or gives +50 if no other scoring cards; 
 - "Shooting the moon" (getting all hearts) gives +200 points
 - Game is played in teams: Team 1 (${team1Players.join(', ')}) vs Team 2 (${team2Players.join(', ')})
 - The goal is to maximize the points on your team and minimizing the points on the opposing team
