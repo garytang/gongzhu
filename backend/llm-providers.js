@@ -47,7 +47,8 @@ class LLMProvider {
     return `You are playing Gongzhu (Chinese Hearts), a trick-taking card game.
 
 GAME RULES:
-- Follow suit if possible, otherwise play any card
+- You must follow suit if you have a card of the lead suit; otherwise play any card
+- The cards are ranked according to conventional card ranks i.e. 2 < 3 < ... < 10 < J < Q < K < Q
 - Player with highest card wins the trick; they collect all the cards in the trick and are scored according to the cards
 - Scoring: Hearts are negative (-10 to -50), Q♠ is -100, J♦ is +100, 10♣ doubles your score or gives +50 if no other scoring cards; 
 - "Shooting the moon" (getting all hearts) gives +200 points
@@ -71,12 +72,10 @@ CURRENT SCORES:
 ${playerHandles.map(p => `${p.handle}: ${scores[p.playerId] || 0}`).join(', ')}
 
 Please choose one card from your hand to play. Consider:
-1. Must follow suit if you have cards of the led suit; otherwise play a card such that your opponents will take negative point cards and your teammate will take positive point cards when possible.
-2. Try to avoid taking penalty cards (hearts, Q♠) unless strategic e.g. shooting the moon.
-3. Try to win J♦ for bonus points when safe
-4. Consider your teammate's position and needs
-5. Be aware of 10♣ doubling effects
-6. Consider the strategy of players from the opposing team and foil their goals if possible
+1. If it is desirable to win or avoid winning a given trick and play accordingly,
+2. Your teammate's position and needs,
+3. The strategy of players from the opposing team and foil their goals if possible,
+4. What cards have been played, which cards remain and what cards people likely have
 
 Please provide your response in the following format:
 <reasoning>
