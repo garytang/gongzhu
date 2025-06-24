@@ -34,26 +34,30 @@ class LLMProvider {
       return `${playerHandle}: ${t.card}`;
     }).join(', ');
 
-    // Format collected cards (only show point cards)
+    // Format collected point cards for all players (only show scoring cards)
     const pointCards = ['♥', 'Q♠', 'J♦', '10♣'];
-    const collectedInfo = Object.entries(collected).map(([playerId, cards]) => {
-      const playerHandle = playerHandles.find(p => p.playerId === playerId)?.handle || playerId;
+    const collectedInfo = playerHandles.map(playerInfo => {
+      const playerId = playerInfo.playerId;
+      const playerHandle = playerInfo.handle;
+      const cards = collected[playerId] || [];
       const relevantCards = cards.filter(card => 
         pointCards.some(pc => card.includes(pc.slice(-1)) || card === pc)
       );
-      return `${playerHandle}: ${relevantCards.join(', ') || 'none'}`;
+      const pointCardsStr = relevantCards.join(', ') || 'none';
+      return `  ${playerHandle}: ${pointCardsStr}`;
     }).join('\n');
 
     return `You are playing Gongzhu (Chinese Hearts), a trick-taking card game.
 
 GAME RULES:
-- You must follow suit if you have a card of the lead suit; otherwise play any card
+- You must follow suit if you have a card of the lead suit; otherwise any card can be played
 - The cards are ranked according to conventional card ranks i.e. 2 < 3 < ... < 10 < J < Q < K < Q
 - Player with highest card wins the trick; they collect all the cards in the trick and are scored according to the cards
 - Scoring: Hearts are negative (-10 to -50), Q♠ is -100, J♦ is +100, 10♣ doubles your score or gives +50 if no other scoring cards; 
 - "Shooting the moon" (getting all hearts) gives +200 points
+- Team scores are the sum of the member scores
 - Game is played in teams: Team 1 (${team1Players.join(', ')}) vs Team 2 (${team2Players.join(', ')})
-- The goal is to maximize the points on your team and minimizing the points on the opposing team
+- The first team to reach +1000 is the winner or the first team to -1000 is the loser.
 
 CURRENT SITUATION:
 Your hand: ${hand.join(', ')}
@@ -72,10 +76,11 @@ CURRENT SCORES:
 ${playerHandles.map(p => `${p.handle}: ${scores[p.playerId] || 0}`).join(', ')}
 
 Please choose one card from your hand to play. Consider:
-1. If it is desirable to win or avoid winning a given trick and play accordingly,
-2. Your teammate's position and needs,
-3. The strategy of players from the opposing team and foil their goals if possible,
-4. What cards have been played, which cards remain and what cards people likely have
+1. If it is desirable to win or avoid winning a given trick and play accordingly i.e. will winning this trick lead to positive points (good) or negative points (bad)
+2. A long term strategy; will a given card be valuable to play now or later,
+3. Your teammate's position and needs,
+4. The strategy of players from the opposing team and foil their goals if possible,
+5. What cards have been played, which cards remain and what cards people likely have
 
 Please provide your response in the following format:
 <reasoning>
