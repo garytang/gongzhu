@@ -4,14 +4,20 @@
   "description": "Gongzhu card game - monorepo with React frontend and Node.js backend",
   "scripts": {
     "dev:backend": "cd backend && npm start",
-    "dev:frontend": "cd frontend && npm start", 
+    "dev:frontend": "cd frontend && npm start",
     "build:frontend": "cd frontend && npm install && npm run build",
     "install:backend": "cd backend && npm install",
     "install:frontend": "cd frontend && npm install",
     "install:all": "npm run install:backend && npm run install:frontend",
-    "test": "cd backend && npm test"
+    "test": "cd backend && npm test",
+    "test:all": "cd backend && npm run test:all"
   },
-  "keywords": ["gongzhu", "card-game", "multiplayer", "websockets"],
+  "keywords": [
+    "gongzhu",
+    "card-game",
+    "multiplayer",
+    "websockets"
+  ],
   "author": "",
   "license": "ISC"
 }
