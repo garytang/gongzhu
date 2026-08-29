@@ -344,7 +344,7 @@ function playCard(match, playerId, card) {
 
 /**
  * What one player can legitimately see. This is the feature vector for bots and the
- * natural unit for offline logging: never include another player's hand.
+ * unit of self-play logging: never include another player's hand.
  */
 function observation(match, playerId) {
   const hand = match.hand;

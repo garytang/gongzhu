@@ -2,7 +2,7 @@
 
 A pure, deterministic rules engine. No sockets, no timers, no globals: every function
 takes a state and returns a new one. That is what makes the same code usable by the
-multiplayer server, the unit tests, and headless simulation.
+multiplayer server, the unit tests, and the self-play harness.
 
 ## Rules implemented
 
@@ -95,8 +95,8 @@ const { match: next, events } = engine.playCard(match, match.hand.turn, moves[0]
 ```
 
 `observation(match, playerId)` returns exactly what one player may see — never
-another player's cards. It is the feature vector for bots and the natural unit for
-offline logging.
+another player's cards. It is the feature vector for bots and the unit of self-play
+logging — see `../selfplay/README.md`.
 
 `events` is one of `card_played`, `trick_won`, `hand_complete`, `match_complete`.
 

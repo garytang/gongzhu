@@ -21,6 +21,9 @@ jobs:
       - name: Tests
         run: npm run test:all
         working-directory: backend
+      - name: Self-play smoke run
+        run: npm run selfplay -- --games 25
+        working-directory: backend
 
   frontend:
     name: Frontend build and tests

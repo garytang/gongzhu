@@ -10,7 +10,8 @@
     "install:frontend": "cd frontend && npm install",
     "install:all": "npm run install:backend && npm run install:frontend",
     "test": "cd backend && npm test",
-    "test:all": "cd backend && npm run test:all"
+    "test:all": "cd backend && npm run test:all",
+    "selfplay": "cd backend && npm run selfplay --"
   },
   "keywords": [
     "gongzhu",

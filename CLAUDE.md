@@ -10,13 +10,14 @@ This is a Gongzhu (Chinese trick-taking card game) web application with real-tim
 
 **Monorepo Structure:**
 - `/backend/src/engine/` - Pure, deterministic rules engine (no sockets, no timers, no globals)
+- `/backend/src/selfplay/` - Headless bot-vs-bot harness that generates training data
 - `/backend/index.js` - Express + Socket.IO server for real-time play
 - `/frontend/` - React TypeScript application with Socket.IO client
 - Root package.json exists but project uses separate frontend/backend package management
 
 **Rules engine (`backend/src/engine/`):**
 - Every function takes a state and returns a new one, so the same code backs the
-  multiplayer server, the unit tests, and headless simulation.
+  multiplayer server, the unit tests, and the self-play harness.
 - Deals are seeded and reproducible; hand N of a seed is derivable without replaying
   hands 1..N-1.
 - `observation(match, playerId)` returns only what one player may legitimately see.
@@ -62,7 +63,9 @@ cd frontend && npm run build  # Production build
 
 **Testing:**
 ```bash
-cd backend && npm test                   # Rules engine tests (the real suite)
+cd backend && npm test                   # Engine + self-play tests (the real suite)
+cd backend && npm run test:engine        # Rules engine only
+cd backend && npm run test:selfplay      # Self-play harness only
 cd backend && npm run test:integration   # Socket.IO integration tests
 cd backend && npm run test:llm           # LLM bot player tests
 cd backend && npm run test:all           # Everything
@@ -73,6 +76,12 @@ cd frontend && npx tsc --noEmit          # Typecheck
 Tests import production code directly. Never re-implement game logic inside a test
 file — that was the previous state of `test/game-logic.test.js`, and it meant the
 suite passed regardless of what the server actually did.
+
+**Self-play / training data:**
+```bash
+cd backend && npm run selfplay -- --games 1000 --out data/selfplay.jsonl
+```
+See `backend/src/selfplay/README.md` for the record format.
 
 **Test Coverage:**
 - Backend: Game logic, scoring, trick resolution, Socket.IO communication, LLM bot integration
@@ -135,7 +144,7 @@ suite passed regardless of what the server actually did.
 
 - Backend logs to `backend.log`, frontend to `frontend.log` when using test script
 - CI runs on every push (`.github/workflows/ci.yml`): backend tests, frontend typecheck
-  and build
+  and build, plus a self-play smoke run
 - No linter configured yet
 - Game state is not persisted - restarting backend resets all games
 - CORS configured to allow all origins for development

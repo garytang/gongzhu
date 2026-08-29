@@ -5,11 +5,13 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "mocha test/engine/*.test.js",
+    "test": "mocha test/engine/*.test.js test/selfplay/*.test.js",
     "test:engine": "mocha test/engine/*.test.js",
+    "test:selfplay": "mocha test/selfplay/*.test.js",
     "test:integration": "mocha test/socket-integration.test.js",
     "test:llm": "mocha test/llm-bot.test.js",
-    "test:all": "mocha --recursive \"test/**/*.test.js\""
+    "test:all": "mocha --recursive \"test/**/*.test.js\"",
+    "selfplay": "node src/selfplay/cli.js"
   },
   "dependencies": {
     "axios": "^1.10.0",
