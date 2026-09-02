@@ -8,7 +8,7 @@ export interface Player {
   isBot?: boolean;
 }
 
-interface GameState {
+export interface GameState {
   trick: { player: string; card: string | null }[]; // player is playerId
   turn: number;
   playerHandles: Player[];
@@ -23,6 +23,9 @@ interface GameState {
   };
 }
 
+/** 'connecting' also covers reconnection attempts after a drop. */
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+
 interface PlayerContextType {
   handle: string;
   setHandle: (handle: string) => void;
@@ -32,6 +35,7 @@ interface PlayerContextType {
   gameState: GameState | null;
   setHand: (hand: string[]) => void;
   playerId: string;
+  connectionStatus: ConnectionStatus;
 }
 
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
@@ -52,6 +56,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
   const [hand, setHand] = useState<string[]>([]);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [playerId, setPlayerId] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
 
   useEffect(() => {
     const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:4000';
@@ -62,20 +67,25 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
       forceNew: true
     });
     setSocket(s);
-    
+
     s.on('connect', () => {
-      console.log('Socket connected:', s.id);
       setPlayerId(s.id || '');
+      setConnectionStatus('connected');
     });
-    
-    s.on('connect_error', (err) => {
-      console.log('Socket connection error:', err);
+
+    s.on('connect_error', () => {
+      setConnectionStatus('disconnected');
     });
-    
-    s.on('disconnect', (reason) => {
-      console.log('Socket disconnected:', reason);
+
+    s.on('disconnect', () => {
+      setConnectionStatus('disconnected');
     });
-    
+
+    // Manager-level event: the client is retrying after a drop.
+    s.io?.on('reconnect_attempt', () => {
+      setConnectionStatus('connecting');
+    });
+
     // Expect playerList as Player[]
     s.on('player_list', (playerList: Player[]) => {
       setPlayers(playerList);
@@ -98,8 +108,10 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
   }, [socket, handle, playerId]);
 
   return (
-    <PlayerContext.Provider value={{ handle, setHandle, players, socket, hand, setHand, gameState, playerId }}>
+    <PlayerContext.Provider
+      value={{ handle, setHandle, players, socket, hand, setHand, gameState, playerId, connectionStatus }}
+    >
       {children}
     </PlayerContext.Provider>
   );
-}; 
+};
