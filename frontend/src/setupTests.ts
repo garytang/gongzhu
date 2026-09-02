@@ -11,3 +11,7 @@ import { TextDecoder, TextEncoder } from 'util';
 if (typeof globalThis.TextEncoder === 'undefined') {
   Object.assign(globalThis, { TextEncoder, TextDecoder });
 }
+
+// jsdom keeps one localStorage for a whole test file, and the app stores the player's
+// identity there, so without this a handle set by one test is still set in the next.
+beforeEach(() => window.localStorage.clear());

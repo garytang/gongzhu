@@ -11,6 +11,7 @@ const NEW_ROOM_OPTIONS: RoomOptions = {
   teams: true,
   targetScore: 1000,
   visibility: 'public',
+  onDisconnect: 'bot',
 };
 
 const PHASE_LABEL: Record<RoomListing['phase'], string> = {

@@ -2,6 +2,7 @@ import React, { ReactNode } from 'react';
 import { act, render, RenderResult } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { PlayerProvider } from '../PlayerContext';
+import { PLAYER_ID_KEY } from '../lib/identity';
 import type { MockSocket } from './mockSocket';
 
 /**
@@ -22,6 +23,9 @@ export function renderWithProviders(
   routes: Record<string, ReactNode>,
   { socket, route }: { socket: MockSocket; route: string }
 ): RenderResult {
+  // The player id is minted once and stored, so seeding it with the mock socket's id
+  // gives every test a stable identity to assert against.
+  window.localStorage.setItem(PLAYER_ID_KEY, socket.id);
   const result = render(
     <PlayerProvider>
       <MemoryRouter initialEntries={[route]}>

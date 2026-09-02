@@ -73,6 +73,18 @@ function createBotRegistry(log = console) {
       return register({ socketId, handle, kind: 'custom' }, pick);
     },
 
+    /**
+     * Re-key an existing bot so that it answers to `socketId`. A hand is dealt to four
+     * fixed player ids, so a bot taking over the seat of a player who left mid-match has
+     * to become that id rather than bring its own.
+     */
+    takeOver(socketId, entry) {
+      seated.delete(entry.socketId);
+      entry.socketId = socketId;
+      seated.set(socketId, entry);
+      return entry;
+    },
+
     has: socketId => seated.has(socketId),
     get: socketId => seated.get(socketId),
     ids: () => [...seated.keys()],

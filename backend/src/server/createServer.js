@@ -73,6 +73,8 @@ function createGongzhuServer({
   trickDelayMs = 1000,
   /** How long an empty room is kept, so that a refresh does not destroy the table. */
   emptyRoomTtlMs = 5 * 60 * 1000,
+  /** How long a seat is held for a player who drops in the middle of a match. */
+  reconnectGraceMs = 60 * 1000,
   corsOrigin = corsOrigins(),
   llmProvider = resolveLLMProvider(),
   targetScore = 1000,
@@ -85,25 +87,66 @@ function createGongzhuServer({
     transports: ['websocket', 'polling'],
   });
 
-  const handles = new Map(); // memberId -> handle, humans and bots alike
+  const handles = new Map(); // memberId -> handle
   const registry = new Map(); // room code -> room
   const roomOf = new Map(); // memberId -> room code
+  const sockets = new Map(); // memberId -> Set of live socket ids
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const handleOf = id => handles.get(id) || id;
-  const describeMember = id => ({ playerId: id, handle: handleOf(id) });
-  const seatHandles = s => s.match.playerIds.map(describeMember);
 
   /**
-   * The key a seat and a room membership are held under. It is the socket id today;
-   * WS-06 replaces it with the client's persistent id, and every lookup below follows
-   * from this one function. Socket.IO puts every socket in a room named by its own id,
-   * which is what makes `io.to(memberId)` and `io.in(memberId)` work; a persistent id
-   * needs a matching `socket.join(playerId)` on connection.
+   * A member's own name. Bots are not members, so use `handleAt` for anything that can
+   * be a seat: a bot that took over a seat answers to the departed player's id, and that
+   * player keeps their name for as long as they are in the room as a spectator.
    */
-  const memberKey = socket => socket.id;
+  const handleOf = id => handles.get(id) || id;
+  const describeMember = id => ({ playerId: id, handle: handleOf(id) });
+
+  /** The name shown for a seat: a bot's own when a bot holds it, otherwise the member's. */
+  function handleAt(room, id) {
+    const bot = room.bots.get(id);
+    return bot ? bot.handle : handleOf(id);
+  }
+
+  const seatHandles = s =>
+    s.match.playerIds.map(id => ({ playerId: id, handle: handleAt(s.room, id) }));
+
+  /**
+   * The key a seat and a room membership are held under: the id the client generated
+   * once and keeps in `localStorage`, so that a new socket after a refresh or a drop is
+   * recognised as the same player. Every lookup in this file follows from this one
+   * function. Socket.IO puts each socket in a room named by its own id, and
+   * `bindIdentity` adds a room named by the persistent id, which is what keeps every
+   * `io.to(memberId)` and `io.in(memberId)` below addressing the player rather than one
+   * of their connections.
+   */
+  const memberKey = socket => socket.data.playerId || socket.id;
 
   const roomFor = socket => registry.get(roomOf.get(memberKey(socket)));
+
+  /**
+   * A client-supplied id is echoed to everyone at the table and used as a Socket.IO room
+   * name, so only an opaque token shaped like the `crypto.randomUUID()` the client mints
+   * is accepted; anything else falls back to the socket id, which is per-connection and
+   * therefore simply loses the reconnect guarantee rather than breaking anything.
+   */
+  const PLAYER_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
+  /**
+   * Ties a socket to a persistent player id, once. A socket keeps the identity it first
+   * registered with: re-registering under a different id would strand the room
+   * membership, the seat and the bots' knowledge of this player under the old key.
+   */
+  function bindIdentity(socket, given) {
+    if (!socket.data.playerId) {
+      socket.data.playerId = PLAYER_ID_PATTERN.test(String(given || '')) ? given : socket.id;
+      socket.join(socket.data.playerId);
+      const known = sockets.get(socket.data.playerId);
+      if (known) known.add(socket.id);
+      else sockets.set(socket.data.playerId, new Set([socket.id]));
+    }
+    return socket.data.playerId;
+  }
 
   // --- Room membership -------------------------------------------------------
 
@@ -119,6 +162,9 @@ function createGongzhuServer({
       spectators: room.spectators.map(describeMember),
       capacity: SEATS,
       phase: rooms.phaseOf(room),
+      // Sent with the room rather than only as an event, so a client that arrives or
+      // refreshes in the middle of a countdown still sees it.
+      absent: [...room.absent].map(([id, { deadline }]) => ({ ...describeMember(id), deadline })),
     };
   }
 
@@ -127,7 +173,7 @@ function createGongzhuServer({
     const botIds = room.bots.ids();
     return [...room.seats, ...botIds].map(id => ({
       playerId: id,
-      handle: handleOf(id),
+      handle: handleAt(room, id),
       isBot: botIds.includes(id),
     }));
   }
@@ -166,8 +212,9 @@ function createGongzhuServer({
   function deleteRoom(room) {
     room.deleteTimer = null;
     if (rooms.members(room).length > 0) return;
+    forgetAbsences(room);
     retire(room.session);
-    removeAllBots(room);
+    room.bots.removeAll();
     registry.delete(room.code);
     log.log(`Room ${room.code} deleted after ${emptyRoomTtlMs}ms empty`);
     // A private room was never in the listing, so its removal changes nothing there.
@@ -176,9 +223,8 @@ function createGongzhuServer({
 
   /**
    * Moves a membership between the lobby channel and a room. Every socket holding the
-   * membership moves, not just the one that asked: a member is one socket today, but a
-   * persistent id (WS-06) makes it any number of them, and the ones left behind would
-   * otherwise miss every table event.
+   * membership moves, not just the one that asked: a player may have any number of tabs
+   * open, and the ones left behind would otherwise miss every table event.
    */
   function attach(memberId, { join: joined, leave }) {
     io.in(memberId).socketsLeave(leave);
@@ -195,13 +241,20 @@ function createGongzhuServer({
     attach(memberId, { leave: LOBBY, join: room.code });
 
     socket.emit('room_joined', { code: room.code, role });
+    if (cancelAbsence(room, memberId)) {
+      toRoom(room, 'player_reconnected', describeMember(memberId));
+      log.log(`${handleOf(memberId)} reclaimed their seat in room ${room.code}`);
+    }
     broadcastRoom(room);
 
-    // A late arrival sees the table as it stands rather than waiting for the next play.
+    // A late arrival — or a returning one — sees the table as it stands rather than
+    // waiting for the next play. A seat a bot has since taken over is not theirs to
+    // play, so no hand goes back to them.
     const s = room.session;
     if (s) {
       socket.emit('collected', s.match.hand.collected);
       socket.emit('game_state', stateFor(s));
+      if (seatedInMatch(room, memberId)) sendHand(s, memberId, socket);
     }
     log.log(`${handleOf(memberId)} joined room ${room.code} as ${role}`);
   }
@@ -214,7 +267,10 @@ function createGongzhuServer({
 
     const room = registry.get(code);
     if (!room) return;
+    cancelAbsence(room, memberId);
+    const wasPlaying = seatedInMatch(room, memberId);
     rooms.release(room, memberId);
+    if (wasPlaying) seatEmptied(room, memberId);
     if (rooms.members(room).length === 0) scheduleDeletion(room);
     // Reaches the leaver too: they are back in the lobby channel by now.
     broadcastRoom(room);
@@ -251,12 +307,20 @@ function createGongzhuServer({
 
   const broadcastGameState = s => toRoom(s.room, 'game_state', stateFor(s));
 
+  /**
+   * One player's private view: their cards, and the ones they may play right now. The
+   * target is every socket holding that identity, or a single one when only an arriving
+   * connection needs catching up.
+   */
+  function sendHand(s, memberId, target) {
+    target.emit('deal_hand', s.match.hand.hands[memberId]);
+    target.emit('legal_moves', s.displayTrick ? [] : engine.legalMoves(s.match, memberId));
+  }
+
   /** Each human at the table sees their own hand and the cards they may play from it. */
   function broadcastHands(s) {
     for (const id of s.match.playerIds) {
-      if (s.room.bots.has(id)) continue;
-      io.to(id).emit('deal_hand', s.match.hand.hands[id]);
-      io.to(id).emit('legal_moves', s.displayTrick ? [] : engine.legalMoves(s.match, id));
+      if (!s.room.bots.has(id)) sendHand(s, id, io.to(id));
     }
   }
 
@@ -270,7 +334,7 @@ function createGongzhuServer({
       teamInfo = {};
       for (const team of ['team1', 'team2']) {
         teamInfo[team] = {
-          players: teams[team].map(handleOf),
+          players: teams[team].map(id => handleAt(s.room, id)),
           roundScore: result.teamScores[team],
           cumulativeScore: s.match.teamTotals[team],
         };
@@ -282,13 +346,13 @@ function createGongzhuServer({
     toRoom(s.room, 'game_over', {
       scores: result.individual,
       collected: Object.fromEntries(
-        Object.entries(result.collected).map(([id, cards]) => [handleOf(id), cards])),
+        Object.entries(result.collected).map(([id, cards]) => [handleAt(s.room, id), cards])),
       teamInfo,
       gameEnded: Boolean(outcome),
       winningTeam: decided && teams ? Number(outcome.winners[0].replace('team', '')) : null,
       // Handles of the winning players, which is the only form of the result that
       // means anything when the room is scoring individuals rather than teams.
-      winners: outcome ? outcome.winners.map(name => (teams ? name : handleOf(name))) : [],
+      winners: outcome ? outcome.winners.map(name => (teams ? name : handleAt(s.room, name))) : [],
     });
     log.log(`Room ${s.room.code}: hand ${result.handNumber} over.`, teamInfo || result.individual);
   }
@@ -351,7 +415,7 @@ function createGongzhuServer({
         ]);
         if (s.retired || s.match.hand.turn !== botId) return;
 
-        log.log(`Room ${s.room.code}: bot ${handleOf(botId)} plays ${card}`);
+        log.log(`Room ${s.room.code}: bot ${handleAt(s.room, botId)} plays ${card}`);
         applyPlay(s, botId, card);
       }
     })()
@@ -377,6 +441,89 @@ function createGongzhuServer({
     };
   };
 
+  // --- Losing and reclaiming a seat ------------------------------------------
+
+  /** Whether the engine has dealt this member into the hand the room is playing. */
+  function seatedInMatch(room, memberId) {
+    const s = room.session;
+    return Boolean(s) && !room.bots.has(memberId) && s.match.playerIds.includes(memberId);
+  }
+
+  /** Ends the reconnect countdown for `memberId`. Answers whether one was running. */
+  function cancelAbsence(room, memberId) {
+    const absence = room.absent.get(memberId);
+    if (!absence) return false;
+    clearTimeout(absence.timer);
+    room.absent.delete(memberId);
+    return true;
+  }
+
+  function forgetAbsences(room) {
+    for (const memberId of [...room.absent.keys()]) cancelAbsence(room, memberId);
+  }
+
+  /**
+   * A seated player's last connection has gone. The seat stays theirs and the table
+   * waits — no bot and no other human plays for them — until they come back or the
+   * countdown runs out. A hand is dealt to four fixed player ids, so releasing the seat
+   * here instead would leave a turn nobody at the table could ever take.
+   */
+  function beginAbsence(room, memberId) {
+    if (room.absent.has(memberId)) return;
+    const deadline = Date.now() + reconnectGraceMs;
+    const timer = setTimeout(() => {
+      // The room may have been deleted, or replaced by a new one under the same code,
+      // in the time this timer was pending.
+      if (registry.get(room.code) !== room || !cancelAbsence(room, memberId)) return;
+      rooms.release(room, memberId);
+      seatEmptied(room, memberId);
+      // Their name outlived them only so that the table could say who had gone.
+      if (!sockets.has(memberId)) handles.delete(memberId);
+      if (rooms.members(room).length === 0) scheduleDeletion(room);
+      broadcastRoom(room);
+    }, reconnectGraceMs);
+    if (timer.unref) timer.unref();
+    room.absent.set(memberId, { timer, deadline });
+
+    log.log(`Room ${room.code}: ${handleOf(memberId)} dropped; ${reconnectGraceMs}ms to return`);
+    toRoom(room, 'player_disconnected', { ...describeMember(memberId), deadline });
+    // The countdown also rides on `room_state`, so a client that arrives or refreshes
+    // part-way through still knows who the table is waiting for. Only that field
+    // changes, so the seats and the lobby listing are left alone.
+    toRoom(room, 'room_state', roomState(room));
+  }
+
+  /**
+   * A player is gone from a seat the engine has already dealt to, whether the countdown
+   * ran out or they walked away deliberately. The room's `onDisconnect` option decides
+   * between the two ways of freeing the table.
+   */
+  function seatEmptied(room, memberId) {
+    if (room.options.onDisconnect === 'lobby') return abandonHand(room, memberId);
+
+    const bot = room.bots.takeOver(memberId, newBot(room));
+    log.log(`Room ${room.code}: ${bot.handle} takes over the seat left by ${handleOf(memberId)}`);
+    toRoom(room, 'seat_taken_by_bot', { ...describeMember(memberId), bot: bot.handle });
+
+    const s = room.session;
+    broadcastGameState(s);
+    runBots(s);
+  }
+
+  /**
+   * The `onDisconnect: 'lobby'` answer: the match ends and the room goes back to
+   * waiting, where the host can deal a fresh one to whoever is still here. The scores
+   * already reported by `game_over` stay on screen until that happens.
+   */
+  function abandonHand(room, memberId) {
+    retire(room.session);
+    room.session = null;
+    room.bots.removeAll();
+    rooms.takeFreeSeats(room);
+    log.log(`Room ${room.code}: hand abandoned after ${handleOf(memberId)} left`);
+    toRoom(room, 'hand_abandoned', describeMember(memberId));
+  }
+
   // --- Starting a game -------------------------------------------------------
 
   const newSeed = () => `${Date.now()}-${Math.random()}`;
@@ -387,8 +534,11 @@ function createGongzhuServer({
     clearTimeout(s.trickTimer);
   }
 
-  function removeAllBots(room) {
-    for (const id of room.bots.removeAll()) handles.delete(id);
+  /** A bot of the kind this server seats: LLM-backed when one is configured. */
+  function newBot(room) {
+    return llmProvider
+      ? room.bots.createLLMBot({ provider: llmProvider, fallbackDifficulty: 'hard' }, describeTable(room))
+      : room.bots.createBot('easy');
   }
 
   function begin(room, match) {
@@ -414,15 +564,9 @@ function createGongzhuServer({
     rooms.takeFreeSeats(room);
     if (room.seats.length === 0) return null;
 
-    removeAllBots(room);
+    room.bots.removeAll();
     const seats = room.seats.slice(0, SEATS);
-    while (seats.length < SEATS) {
-      const bot = llmProvider
-        ? room.bots.createLLMBot({ provider: llmProvider, fallbackDifficulty: 'hard' }, describeTable(room))
-        : room.bots.createBot('easy');
-      handles.set(bot.socketId, bot.handle);
-      seats.push(bot.socketId);
-    }
+    while (seats.length < SEATS) seats.push(newBot(room).socketId);
 
     const [a, b, c, d] = engine.shuffled(seats, Math.random);
     return begin(room, engine.startHand(engine.createMatch({
@@ -485,13 +629,21 @@ function createGongzhuServer({
       const raw = typeof data === 'string' ? data : data && data.handle;
       const handle = String(raw == null ? '' : raw).trim().slice(0, MAX_HANDLE_LENGTH);
       if (!handle) return;
-      const memberId = memberKey(socket);
+      // Identity arrives with the first registration, so this is where a reconnecting
+      // socket becomes the player it was before rather than a stranger.
+      const memberId = bindIdentity(socket, data && data.playerId);
+      // The same player may hold several connections; the last one to register names them.
       handles.set(memberId, handle);
       log.log(`Registered handle: ${handle} (${memberId})`);
       socket.emit('handle_registered', describeMember(memberId));
 
       const room = roomFor(socket);
-      if (room) broadcastRoom(room);
+      if (!room) return;
+      // The player is still in the room, but a socket that has just reconnected — or a
+      // second tab — is not yet in its channel and would hear nothing. Rejoining is what
+      // reclaims the seat and replays the table, so no client has to arrange it.
+      if (socket.rooms.has(room.code)) broadcastRoom(room);
+      else join(socket, room);
     });
 
     socket.on('list_rooms', () => socket.emit('room_list', publicRooms()));
@@ -580,6 +732,9 @@ function createGongzhuServer({
       if (!s || s.displayTrick || s.match.phase !== 'playing') return;
 
       const memberId = memberKey(socket);
+      // A seat a bot has taken over is no longer the departed player's to play, even
+      // though the engine still knows their cards by their id.
+      if (room.bots.has(memberId)) return;
       if (!engine.legalMoves(s.match, memberId).includes(card)) {
         log.log('Invalid play by', memberId, card);
         socket.emit('invalid_play', card);
@@ -590,7 +745,21 @@ function createGongzhuServer({
 
     socket.on('disconnect', () => {
       const memberId = memberKey(socket);
+      const live = sockets.get(memberId);
+      if (live) {
+        live.delete(socket.id);
+        // One of several tabs closing is not the player leaving.
+        if (live.size > 0) return;
+        sockets.delete(memberId);
+      }
       log.log('User disconnected:', memberId, handles.get(memberId));
+
+      const room = registry.get(roomOf.get(memberId));
+      if (room && seatedInMatch(room, memberId)) {
+        // Their seat, handle and room membership are all held for them.
+        beginAbsence(room, memberId);
+        return;
+      }
       leaveRoom(memberId);
       handles.delete(memberId);
     });
@@ -607,6 +776,7 @@ function createGongzhuServer({
     async close() {
       for (const room of registry.values()) {
         retire(room.session);
+        forgetAbsences(room);
         clearTimeout(room.deleteTimer);
       }
       registry.clear();

@@ -32,11 +32,14 @@ function roomState(overrides: Partial<RoomState> = {}): RoomState {
     code: 'KJ7P2M',
     name: 'Friday night',
     host: seats[0],
-    options: { variant: 'standard', teams: true, targetScore: 1000, visibility: 'public' },
+    options: {
+      variant: 'standard', teams: true, targetScore: 1000, visibility: 'public', onDisconnect: 'bot',
+    },
     seats,
     spectators: [],
     capacity: 4,
     phase: 'playing',
+    absent: [],
     ...overrides,
   };
 }

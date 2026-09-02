@@ -22,11 +22,14 @@ const roomState: RoomState = {
   code: 'KJ7P2M',
   name: "Ann's table",
   host: { handle: 'Ann', playerId: 'ann' },
-  options: { variant: 'standard', teams: true, targetScore: 1000, visibility: 'public' },
+  options: {
+    variant: 'standard', teams: true, targetScore: 1000, visibility: 'public', onDisconnect: 'bot',
+  },
   seats: [{ handle: 'Ann', playerId: 'ann' }],
   spectators: [],
   capacity: 4,
   phase: 'waiting',
+  absent: [],
 };
 
 function renderLobby() {
@@ -73,7 +76,9 @@ describe('Lobby', () => {
 
     expect(mockSocketInstance.lastEmit('create_room')).toEqual({
       name: 'Friday night',
-      options: { variant: 'pips', teams: false, targetScore: 1000, visibility: 'private' },
+      options: {
+        variant: 'pips', teams: false, targetScore: 1000, visibility: 'private', onDisconnect: 'bot',
+      },
     });
   });
 
@@ -84,7 +89,9 @@ describe('Lobby', () => {
 
     expect(mockSocketInstance.lastEmit('create_room')).toEqual({
       name: '',
-      options: { variant: 'standard', teams: true, targetScore: 1000, visibility: 'public' },
+      options: {
+        variant: 'standard', teams: true, targetScore: 1000, visibility: 'public', onDisconnect: 'bot',
+      },
     });
   });
 
@@ -99,7 +106,9 @@ describe('Lobby', () => {
 
     expect(mockSocketInstance.lastEmit('create_room')).toEqual({
       name: 'Friday night',
-      options: { variant: 'standard', teams: true, targetScore: 500, visibility: 'public' },
+      options: {
+        variant: 'standard', teams: true, targetScore: 500, visibility: 'public', onDisconnect: 'bot',
+      },
     });
   });
 

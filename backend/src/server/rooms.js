@@ -18,11 +18,19 @@ const CODE_LENGTH = 6;
 const VISIBILITIES = ['public', 'private'];
 const MAX_NAME_LENGTH = 40;
 
+/**
+ * What happens to a seat whose player is still gone when the reconnect countdown ends:
+ * a bot plays it out for the rest of the match, or the hand is abandoned and everyone
+ * waits in the room for a fresh one.
+ */
+const DISCONNECT_POLICIES = ['bot', 'lobby'];
+
 const DEFAULT_ROOM_OPTIONS = {
   variant: DEFAULT_VARIANT,
   teams: true,
   targetScore: DEFAULT_OPTIONS.targetScore,
   visibility: 'public',
+  onDisconnect: 'bot',
 };
 
 /** A rejected client request. `createServer` turns it into a `room_error`. */
@@ -78,6 +86,12 @@ function normalizeRoomOptions(patch = {}, base = DEFAULT_ROOM_OPTIONS) {
     }
     options.targetScore = target;
   }
+  if ('onDisconnect' in given) {
+    if (!DISCONNECT_POLICIES.includes(given.onDisconnect)) {
+      throw new RoomError(`Unknown onDisconnect policy "${given.onDisconnect}"`);
+    }
+    options.onDisconnect = given.onDisconnect;
+  }
   if ('visibility' in given) {
     if (!VISIBILITIES.includes(given.visibility)) {
       throw new RoomError(`Unknown visibility "${given.visibility}"`);
@@ -102,6 +116,11 @@ function createRoom({ code, name, hostId, options, bots }) {
     bots,
     /** Set while the room is empty and counting down to deletion. */
     deleteTimer: null,
+    /**
+     * Seated players who have dropped mid-match, `memberId -> { timer, deadline }`.
+     * They keep their seat until the timer fires; `createServer` owns both.
+     */
+    absent: new Map(),
   };
 }
 
@@ -132,6 +151,16 @@ function phaseOf(room) {
  * four players; `takeFreeSeats` promotes spectators when the next hand is started.
  */
 function admit(room, memberId) {
+  const role = seat(room, memberId);
+  // An emptied room keeps the id of the host who left it, so the host of a room they
+  // refreshed out of gets it back rather than losing it to whoever arrives first. A
+  // stranger walking into an abandoned room still hosts it, so no table is left
+  // unstartable.
+  if (!isMember(room, room.hostId)) room.hostId = memberId;
+  return role;
+}
+
+function seat(room, memberId) {
   if (isMember(room, memberId)) return isSpectator(room, memberId) ? 'spectator' : 'seat';
   if (phaseOf(room) === 'waiting' && room.seats.length < SEATS) {
     room.seats.push(memberId);
@@ -155,7 +184,9 @@ function release(room, memberId) {
   room.spectators = room.spectators.filter(id => id !== memberId);
 
   if (phaseOf(room) === 'waiting') takeFreeSeats(room);
-  if (room.hostId === memberId) room.hostId = members(room)[0] || null;
+  // The role passes to whoever is left; with nobody left it stays with the departing
+  // host, for them to reclaim in `admit` if they come back.
+  if (room.hostId === memberId) room.hostId = members(room)[0] || memberId;
 }
 
 /** Spectators fill any seat left empty, in arrival order. Called when a hand is dealt. */
@@ -170,6 +201,7 @@ module.exports = {
   CODE_ALPHABET,
   CODE_LENGTH,
   DEFAULT_ROOM_OPTIONS,
+  DISCONNECT_POLICIES,
   RoomError,
   admit,
   createRoom,
