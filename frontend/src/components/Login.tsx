@@ -3,7 +3,18 @@ import { useNavigate } from 'react-router-dom';
 import { usePlayer } from '../PlayerContext';
 import { page, primaryButton } from './styles';
 
-export default function Login() {
+interface LoginProps {
+  /** Where to go once a handle is set. A room asks for a handle before letting you in. */
+  redirectTo?: string;
+  heading?: string;
+  submitLabel?: string;
+}
+
+export default function Login({
+  redirectTo = '/lobby',
+  heading = 'Enter your handle',
+  submitLabel = 'Enter Lobby',
+}: LoginProps) {
   const { handle, setHandle } = usePlayer();
   const [input, setInput] = useState(handle);
   const navigate = useNavigate();
@@ -12,13 +23,13 @@ export default function Login() {
     e.preventDefault();
     if (input.trim()) {
       setHandle(input.trim());
-      navigate('/lobby');
+      navigate(redirectTo);
     }
   };
 
   return (
     <div style={{ ...page, maxWidth: 400, textAlign: 'center' }}>
-      <h2>Enter your handle</h2>
+      <h2>{heading}</h2>
       <form onSubmit={handleSubmit}>
         <input
           type="text"
@@ -30,7 +41,7 @@ export default function Login() {
         />
         <br />
         <button type="submit" style={{ ...primaryButton, marginTop: '1rem' }}>
-          Enter Lobby
+          {submitLabel}
         </button>
       </form>
     </div>

@@ -6,19 +6,16 @@ const { io: Client } = require('socket.io-client');
 const engine = require('../src/engine');
 const { createGongzhuServer, corsOrigins } = require('../src/server/createServer');
 const { createBotRegistry } = require('../src/server/bots');
+const rooms = require('../src/server/rooms');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const quiet = { log() {}, warn() {}, error() {} };
 
+/** Registers a handle, which is the identity step every room action requires. */
 function connect(url, handle) {
   const client = new Client(url, { transports: ['websocket'] });
   return new Promise((resolve) => {
-    client.on('player_list', function seated(list) {
-      if (list.some(p => p.handle === handle)) {
-        client.off('player_list', seated);
-        resolve(client);
-      }
-    });
+    client.once('handle_registered', () => resolve(client));
     client.on('connect', () => client.emit('register_handle', { handle }));
   });
 }
@@ -62,7 +59,7 @@ function autoplay(clients) {
 }
 
 /** The real server on an ephemeral port, with the display delays turned down. */
-async function table(playerCount, options = {}) {
+async function serve(options = {}) {
   const instance = createGongzhuServer({
     botDelayMs: 0,
     trickDelayMs: 5,
@@ -71,11 +68,36 @@ async function table(playerCount, options = {}) {
     ...options,
   });
   await new Promise(resolve => instance.server.listen(0, resolve));
-
-  const url = `http://localhost:${instance.server.address().port}`;
+  instance.url = `http://localhost:${instance.server.address().port}`;
   instance.clients = [];
-  for (let i = 0; i < playerCount; i++) {
-    instance.clients.push(await connect(url, `Player${i + 1}`));
+  return instance;
+}
+
+/** A connected, registered client, put into `code` — or into a room it creates. */
+async function member(instance, handle, code) {
+  const client = await connect(instance.url, handle);
+  instance.clients.push(client);
+  // `room_joined` is answered to the caller before the room is broadcast, so wait for
+  // the broadcast too: a caller that starts listening on `room_joined` alone would
+  // still have those two events in flight.
+  const settled = Promise.all([
+    waitFor(client, 'room_joined'),
+    waitFor(client, 'room_state'),
+    waitFor(client, 'player_list'),
+  ]);
+  if (code) client.emit('join_room', { code });
+  else client.emit('create_room', { name: `${handle}'s table` });
+  const [joined] = await settled;
+  return { client, ...joined };
+}
+
+/** One room hosted by the first of `playerCount` clients; the rest join by code. */
+async function table(playerCount, options = {}) {
+  const instance = await serve(options);
+  const host = await member(instance, 'Player1');
+  instance.code = host.code;
+  for (let i = 1; i < playerCount; i++) {
+    await member(instance, `Player${i + 1}`, host.code);
   }
   return instance;
 }
@@ -255,7 +277,284 @@ describe('Socket.IO server', function () {
 
     assert.strictEqual(Object.values(collected).flat().length, 52);
     assert.strictEqual(Object.keys(result.scores).length, 4);
-    assert.strictEqual(instance.bots.ids().length, 3);
+    assert.strictEqual(instance.getRoom(instance.code).bots.ids().length, 3);
+  });
+
+  it('scores individuals when the room turns teams off', async () => {
+    instance = await table(1);
+    const [client] = instance.clients;
+
+    const options = waitFor(client, 'room_state', r => r.options.teams === false);
+    client.emit('update_room_options', { teams: false, targetScore: 1 });
+    await options;
+
+    autoplay(instance.clients);
+    const over = waitFor(client, 'game_over');
+    client.emit('start_game');
+    const result = await over;
+
+    assert.strictEqual(result.teamInfo, null);
+    assert.strictEqual(result.winningTeam, null);
+    assert.strictEqual(result.gameEnded, true);
+    assert.strictEqual(result.winners.length >= 1, true);
+  });
+});
+
+describe('rooms', function () {
+  this.timeout(20000);
+  let instance;
+
+  afterEach(async () => {
+    if (!instance) return;
+    for (const client of instance.clients) client.close();
+    await instance.close();
+    instance = null;
+  });
+
+  it('keeps two rooms playing at once without a single event crossing over', async () => {
+    instance = await serve();
+    const a1 = await member(instance, 'A1');
+    const a2 = await member(instance, 'A2', a1.code);
+    const b1 = await member(instance, 'B1');
+    // B1's own copy of the broadcast announcing B2 must land before the watch starts,
+    // or it would be counted as cross-talk from room A.
+    const bothSeated = waitFor(b1.client, 'room_state', r => r.seats.length === 2);
+    const b2 = await member(instance, 'B2', b1.code);
+    await bothSeated;
+    assert.notStrictEqual(a1.code, b1.code);
+
+    // Anything room A causes to reach a socket in room B is cross-talk.
+    const leaked = [];
+    b1.client.onAny(event => leaked.push(event));
+    b2.client.onAny(event => leaked.push(event));
+
+    autoplay([a1.client, a2.client]);
+    const over = waitFor(a1.client, 'game_over');
+    a1.client.emit('start_game');
+    const result = await over;
+
+    assert.strictEqual(Object.keys(result.scores).length, 4);
+    assert.deepStrictEqual(leaked, []);
+    assert.strictEqual(instance.getRoom(b1.code).session, null);
+
+    // Room B then plays its own hand, undisturbed by A having finished one.
+    b1.client.offAny();
+    b2.client.offAny();
+    autoplay([b1.client, b2.client]);
+    const bOver = waitFor(b1.client, 'game_over');
+    b1.client.emit('start_game');
+    assert.strictEqual(Object.keys((await bOver).scores).length, 4);
+  });
+
+  it('lets a fresh socket join by code, whatever the casing', async () => {
+    instance = await serve();
+    const host = await member(instance, 'Host');
+
+    const guest = await connect(instance.url, 'Guest');
+    instance.clients.push(guest);
+    const joined = waitFor(guest, 'room_joined');
+    const seated = waitFor(guest, 'room_state');
+    guest.emit('join_room', { code: ` ${host.code.toLowerCase()} ` });
+
+    assert.deepStrictEqual(await joined, { code: host.code, role: 'seat' });
+    const state = await seated;
+    assert.deepStrictEqual(state.seats.map(p => p.handle), ['Host', 'Guest']);
+    assert.strictEqual(state.host.handle, 'Host');
+    assert.strictEqual(state.phase, 'waiting');
+  });
+
+  it('rejects start_game, options and kicks from anyone but the host', async () => {
+    instance = await serve();
+    const host = await member(instance, 'Host');
+    const guest = await member(instance, 'Guest', host.code);
+
+    for (const [event, payload] of [['start_game'], ['update_room_options', { teams: false }], ['kick', { playerId: 'x' }]]) {
+      const rejected = waitFor(guest.client, 'room_error');
+      guest.client.emit(event, payload);
+      assert.strictEqual((await rejected).reason, 'Only the host can do that');
+    }
+    assert.strictEqual(instance.getRoom(host.code).session, null);
+  });
+
+  it('makes the fifth joiner a spectator with no hand', async () => {
+    instance = await serve();
+    const host = await member(instance, 'Host');
+    for (const name of ['P2', 'P3', 'P4']) await member(instance, name, host.code);
+
+    const fifth = await member(instance, 'P5', host.code);
+    assert.strictEqual(fifth.role, 'spectator');
+
+    const state = waitFor(fifth.client, 'room_state', r => r.phase === 'playing');
+    // The spectator sees the table but is never dealt into it.
+    const table = waitFor(fifth.client, 'game_state');
+    let dealt = false;
+    fifth.client.on('deal_hand', () => { dealt = true; });
+    host.client.emit('start_game');
+
+    const playing = await state;
+    assert.deepStrictEqual(playing.spectators.map(p => p.handle), ['P5']);
+    assert.strictEqual(playing.seats.length, 4);
+    assert.strictEqual((await table).playerHandles.length, 4);
+    assert.strictEqual(dealt, false);
+  });
+
+  it('seats a waiting spectator when a seat frees before the game starts', async () => {
+    instance = await serve();
+    const host = await member(instance, 'Host');
+    const others = [];
+    for (const name of ['P2', 'P3', 'P4']) others.push(await member(instance, name, host.code));
+    const fifth = await member(instance, 'P5', host.code);
+    assert.strictEqual(fifth.role, 'spectator');
+
+    const promoted = waitFor(fifth.client, 'room_state', r => r.spectators.length === 0);
+    others[0].client.emit('leave_room');
+    const state = await promoted;
+    assert.deepStrictEqual(state.seats.map(p => p.handle), ['Host', 'P3', 'P4', 'P5']);
+  });
+
+  it('sends a kicked player out with a reason and a fresh lobby listing', async () => {
+    instance = await serve();
+    const host = await member(instance, 'Host');
+    const guest = await member(instance, 'Guest', host.code);
+
+    const told = waitFor(guest.client, 'room_error');
+    const left = waitFor(guest.client, 'room_left');
+    const listed = waitFor(guest.client, 'room_list');
+    const seatFreed = waitFor(host.client, 'room_state', r => r.seats.length === 1);
+    host.client.emit('kick', { playerId: guest.client.id });
+
+    assert.match((await told).reason, /removed you/);
+    await left;
+    // Leaving by any route puts you back in the lobby channel, listing included.
+    assert.deepStrictEqual((await listed).map(r => r.code), [host.code]);
+    assert.deepStrictEqual((await seatFreed).seats.map(p => p.handle), ['Host']);
+  });
+
+  it('gives a leaving player the lobby listing without being asked', async () => {
+    instance = await serve();
+    const host = await member(instance, 'Host');
+    const other = await member(instance, 'Other');
+
+    const left = waitFor(host.client, 'room_left');
+    const listed = waitFor(host.client, 'room_list');
+    host.client.emit('leave_room');
+    await left;
+    // The room just left is still listed: it is empty but inside its deletion grace period.
+    assert.deepStrictEqual((await listed).map(r => r.code).sort(),
+      [host.code, other.code].sort());
+  });
+
+  it('passes the host role to the next member when the host leaves', async () => {
+    instance = await serve();
+    const host = await member(instance, 'Host');
+    const guest = await member(instance, 'Guest', host.code);
+
+    const handedOver = waitFor(guest.client, 'room_state', r => r.host.handle === 'Guest');
+    host.client.emit('leave_room');
+    const state = await handedOver;
+    assert.deepStrictEqual(state.seats.map(p => p.handle), ['Guest']);
+
+    // The new host can do what the old one could.
+    const started = waitFor(guest.client, 'game_started');
+    guest.client.emit('start_game');
+    await started;
+  });
+
+  it('deletes a room only after it has been empty for the whole timeout', async () => {
+    instance = await serve({ emptyRoomTtlMs: 120 });
+    const host = await member(instance, 'Host');
+    assert.strictEqual(instance.rooms.size, 1);
+
+    host.client.close();
+    await sleep(60);
+    assert.strictEqual(instance.rooms.size, 1, 'the room went away before the timeout');
+    await sleep(150);
+    assert.strictEqual(instance.rooms.size, 0);
+  });
+
+  it('keeps the room when someone rejoins inside the timeout', async () => {
+    instance = await serve({ emptyRoomTtlMs: 200 });
+    const host = await member(instance, 'Host');
+    host.client.close();
+    await sleep(60);
+
+    const returning = await member(instance, 'Host', host.code);
+    await sleep(250);
+    assert.strictEqual(instance.rooms.size, 1);
+    assert.strictEqual(returning.role, 'seat');
+  });
+
+  it('lists public rooms in the lobby and hides private ones', async () => {
+    instance = await serve();
+    const open = await member(instance, 'Open');
+    const secret = await connect(instance.url, 'Secret');
+    instance.clients.push(secret);
+    const madePrivate = waitFor(secret, 'room_state', r => r.options.visibility === 'private');
+    secret.emit('create_room', { name: 'Hidden', options: { visibility: 'private' } });
+    await waitFor(secret, 'room_joined');
+    secret.emit('update_room_options', { visibility: 'private' });
+    await madePrivate;
+
+    const watcher = await connect(instance.url, 'Watcher');
+    instance.clients.push(watcher);
+    const list = waitFor(watcher, 'room_list');
+    watcher.emit('list_rooms');
+
+    const codes = (await list).map(r => r.code);
+    assert.deepStrictEqual(codes, [open.code]);
+  });
+
+  it('refuses a room option the engine cannot honour', async () => {
+    instance = await serve();
+    const host = await member(instance, 'Host');
+    const rejected = waitFor(host.client, 'room_error');
+    host.client.emit('update_room_options', { variant: 'nonsense' });
+    assert.match((await rejected).reason, /variant/);
+  });
+});
+
+describe('room model', () => {
+  it('never puts an ambiguous character in a join code', () => {
+    for (const character of rooms.CODE_ALPHABET) assert.ok(!'01OI'.includes(character));
+    const code = rooms.newRoomCode(() => false);
+    assert.match(code, new RegExp(`^[${rooms.CODE_ALPHABET}]{${rooms.CODE_LENGTH}}$`));
+  });
+
+  it('gives up rather than returning a code that is already in use', () => {
+    assert.throws(() => rooms.newRoomCode(() => true), rooms.RoomError);
+  });
+
+  it('rejects options outside what the engine and lobby accept', () => {
+    assert.throws(() => rooms.normalizeRoomOptions({ variant: 'wild' }), rooms.RoomError);
+    assert.throws(() => rooms.normalizeRoomOptions({ teams: 'yes' }), rooms.RoomError);
+    assert.throws(() => rooms.normalizeRoomOptions({ targetScore: 0 }), rooms.RoomError);
+    assert.throws(() => rooms.normalizeRoomOptions({ visibility: 'unlisted' }), rooms.RoomError);
+  });
+
+  it('keeps the options it was given and ignores keys it does not know', () => {
+    const options = rooms.normalizeRoomOptions({ teams: false, targetScore: 500, nonsense: 1 });
+    assert.deepStrictEqual(options,
+      { variant: 'standard', teams: false, targetScore: 500, visibility: 'public' });
+  });
+
+  it('spectates the fifth arrival and seats them when a seat frees', () => {
+    const room = rooms.createRoom({ code: 'ABCDEF', name: 'T', hostId: 'a', options: rooms.DEFAULT_ROOM_OPTIONS });
+    for (const id of ['b', 'c', 'd']) assert.strictEqual(rooms.admit(room, id), 'seat');
+    assert.strictEqual(rooms.admit(room, 'e'), 'spectator');
+
+    rooms.release(room, 'b');
+    assert.deepStrictEqual(room.seats, ['a', 'c', 'd', 'e']);
+    assert.deepStrictEqual(room.spectators, []);
+  });
+
+  it('passes the host role along and empties out in order', () => {
+    const room = rooms.createRoom({ code: 'ABCDEF', name: 'T', hostId: 'a', options: rooms.DEFAULT_ROOM_OPTIONS });
+    rooms.admit(room, 'b');
+    rooms.release(room, 'a');
+    assert.strictEqual(room.hostId, 'b');
+    rooms.release(room, 'b');
+    assert.strictEqual(room.hostId, null);
+    assert.deepStrictEqual(rooms.members(room), []);
   });
 });
 
