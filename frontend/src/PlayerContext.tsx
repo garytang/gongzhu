@@ -22,6 +22,11 @@ export interface GameState {
     team1: number;
     team2: number;
   } | null;
+  /** The trick the server resolved most recently, and the playerId that took it. */
+  lastTrick?: {
+    trick: { player: string; card: string | null }[];
+    winner: string;
+  } | null;
 }
 
 export type RoomPhase = 'waiting' | 'playing' | 'handOver' | 'matchOver';
@@ -73,6 +78,8 @@ interface PlayerContextType {
   players: Player[];
   socket: Socket | null;
   hand: string[];
+  /** Cards this player may play right now, as the server sees it; empty otherwise. */
+  legalMoves: string[];
   gameState: GameState | null;
   setHand: (hand: string[]) => void;
   playerId: string;
@@ -103,6 +110,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
   const [players, setPlayers] = useState<Player[]>([]);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [hand, setHand] = useState<string[]>([]);
+  const [legalMoves, setLegalMoves] = useState<string[]>([]);
   const [gameState, setGameState] = useState<GameState | null>(null);
   // The id claimed on every registration: minted once and kept in localStorage, so a
   // refresh or a dropped connection returns to the seat the server is holding.
@@ -149,9 +157,9 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
 
     // The server's acknowledgement of `register_handle`. Room actions are refused until
     // it arrives, and a component's effect can fire before the provider's, so screens
-    // wait for this rather than for the handle being set locally.
-    // The server's acknowledgement also puts a reconnecting socket back into the room
-    // its player still holds, so nothing here has to ask for that.
+    // wait for this rather than for the handle being set locally. It also puts a
+    // reconnecting socket back into the room its player still holds, so nothing here
+    // has to ask for that.
     s.on('handle_registered', (player: Player) => {
       setPlayerId(player.playerId);
       setRegisteredHandle(player.handle);
@@ -169,6 +177,17 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     s.on('deal_hand', (cards: string[]) => {
       setHand(cards);
     });
+    // Sent with every hand. It is handled here rather than on the table because the
+    // first one arrives in the same batch as the deal, before the table has mounted.
+    // The server sends one per card played, and it is the empty list for the three
+    // players not on turn, so an unchanged list keeps its identity and renders nothing.
+    s.on('legal_moves', (cards: string[]) => {
+      setLegalMoves(previous =>
+        previous.length === cards.length && previous.every((card, i) => card === cards[i])
+          ? previous
+          : cards
+      );
+    });
     s.on('game_state', (state: GameState) => {
       setGameState(state);
     });
@@ -177,6 +196,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     const clearTable = () => {
       setPlayers([]);
       setHand([]);
+      setLegalMoves([]);
       setGameState(null);
     };
 
@@ -232,6 +252,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
         players,
         socket,
         hand,
+        legalMoves,
         setHand,
         gameState,
         playerId,

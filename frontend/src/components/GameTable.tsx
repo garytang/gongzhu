@@ -1,23 +1,23 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { usePlayer } from '../PlayerContext';
 import type { Player } from '../PlayerContext';
-import { cardColor, getSuit, pointCards, trickWinner, TrickEntry } from '../lib/cards';
+import { cardColor, getSuit, pointCards } from '../lib/cards';
 import { displayTeamScores, teamOf } from '../lib/scores';
 import CollectedCardsModal from './CollectedCardsModal';
 import GameOverModal, { GameOverData } from './GameOverModal';
 import Hand from './Hand';
-import PlayerTiles from './PlayerTiles';
 import ReconnectOverlay from './ReconnectOverlay';
+import RoundHistory from './RoundHistory';
 import Scoreboard, { IndividualScores } from './Scoreboard';
-import Trick from './Trick';
+import TableSeats from './TableSeats';
 import { button, page } from './styles';
 
 /** How long the "X won the trick" message stays up after the trick is cleared. */
 const TRICK_FLASH_MS = 2500;
 
 export default function GameTable() {
-  const { handle, hand, gameState, socket, playerId, isHost, isSpectator, room, players } =
-    usePlayer();
+  const { handle, hand, legalMoves, gameState, socket, playerId, isHost, isSpectator, room,
+    players } = usePlayer();
   // A bot that took over a seat still answers to the id of the player who left it, so a
   // spectator must not recognise that seat as their own.
   const myPlayerId = isSpectator ? '' : playerId;
@@ -26,34 +26,38 @@ export default function GameTable() {
   const [gameOver, setGameOver] = useState<GameOverData | null>(null);
   const [collected, setCollected] = useState<Record<string, string[]>>({});
   const [modalPlayer, setModalPlayer] = useState<string | null>(null);
-  // Held as an object so that consecutive wins by the same player are distinct
-  // states and each one restarts the flash timer.
-  const [lastTrick, setLastTrick] = useState<{ winner: string } | null>(null);
-  const previousTrick = useRef<TrickEntry[]>([]);
+  const [flashWinner, setFlashWinner] = useState<string | null>(null);
+  // The `game_over` payloads of the current match, which is all the round history needs.
+  const [results, setResults] = useState<GameOverData[]>([]);
 
-  const trickLength = gameState?.trick.length;
+  const seats = gameState?.playerHandles ?? [];
+  const trick = gameState?.trick ?? [];
 
   useEffect(() => {
     setPlayedCard(null);
-  }, [trickLength]);
+  }, [trick.length]);
 
-  // The server clears the trick about a second after the fourth card, so a
-  // 4 → 0 transition marks a completed trick whose winner is worth showing.
+  // A trick still on screen with four cards in it is one the server resolved and is
+  // holding there, so `lastTrick` names who took it. The message outlives that hold,
+  // and the gap before the next trick fills is what lets a repeat win flash again.
+  const heldTrickWinner = trick.length === 4 ? gameState?.lastTrick?.winner : undefined;
   useEffect(() => {
-    const current = gameState?.trick ?? [];
-    const previous = previousTrick.current;
-    previousTrick.current = current;
-    if (current.length === 0 && previous.length === 4) {
-      const winner = trickWinner(previous);
-      if (winner) setLastTrick({ winner });
-    }
-  }, [gameState]);
+    if (heldTrickWinner) setFlashWinner(heldTrickWinner);
+  }, [heldTrickWinner]);
 
   useEffect(() => {
-    if (!lastTrick) return;
-    const timer = setTimeout(() => setLastTrick(null), TRICK_FLASH_MS);
+    if (!flashWinner) return;
+    const timer = setTimeout(() => setFlashWinner(null), TRICK_FLASH_MS);
     return () => clearTimeout(timer);
-  }, [lastTrick]);
+  }, [flashWinner]);
+
+  // A match that has completed no hands reports zero totals for everyone. That is
+  // what both "new game" and a continue past the end of a match look like from here,
+  // and it is the only moment a ledger carried over from the previous match is wrong.
+  const matchIsFresh = Object.values(gameState?.scores ?? {}).every(score => score === 0);
+  useEffect(() => {
+    if (matchIsFresh) setResults([]);
+  }, [matchIsFresh]);
 
   useEffect(() => {
     if (!socket) return;
@@ -65,11 +69,12 @@ export default function GameTable() {
     const onGameOver = (data: GameOverData) => {
       setGameOver(data);
       setCollected(data.collected || {});
+      setResults(previous => [...previous, data]);
     };
     const onGameStarted = () => {
       setGameOver(null);
       setCollected({});
-      setLastTrick(null);
+      setFlashWinner(null);
     };
     const onCollected = (data: Record<string, string[]>) => {
       setCollected(data);
@@ -90,8 +95,7 @@ export default function GameTable() {
     return <div style={{ textAlign: 'center', marginTop: '2rem' }}>Waiting for game state...</div>;
   }
 
-  const { trick, turn, playerHandles: seats } = gameState;
-  const currentPlayer = seats[turn];
+  const currentPlayer = seats[gameState.turn];
   const isMyTurn = currentPlayer?.playerId === myPlayerId;
   const hasPlayed = playedCard !== null || trick.some(entry => entry.player === myPlayerId && entry.card);
   const leaderId = trick.length > 0 ? trick[0].player : currentPlayer?.playerId;
@@ -100,6 +104,9 @@ export default function GameTable() {
   const teamScores = displayTeamScores(gameState);
   const myPointCards = pointCards(collected[myPlayerId] || []);
   const botIds = new Set(players.filter((p: Player) => p.isBot).map((p: Player) => p.playerId));
+  const winnerHandle = flashWinner
+    ? seats.find((p: Player) => p.playerId === flashWinner)?.handle ?? null
+    : null;
 
   const onPlayCard = (card: string) => {
     if (!isMyTurn || hasPlayed || !socket) return;
@@ -107,15 +114,18 @@ export default function GameTable() {
     socket.emit('play_card', card);
   };
 
-  const turnMessage = isSpectator
-    ? `Waiting for ${currentPlayer?.handle ?? 'the next player'}...`
-    : isMyTurn
-    ? hasPlayed
-      ? 'Waiting for others...'
-      : ledSuit
-        ? `Your turn — follow ${ledSuit} if you can`
-        : 'Your turn — you lead this trick'
-    : `Waiting for ${currentPlayer?.handle ?? 'the next player'}...`;
+  const myTurnMessage = hasPlayed
+    ? 'Waiting for others...'
+    : ledSuit === null
+    ? 'Your turn — you lead this trick'
+    : legalMoves.some(card => getSuit(card) === ledSuit)
+    ? `Your turn — follow ${ledSuit}`
+    : `Your turn — no ${ledSuit} left, play anything`;
+
+  const turnMessage =
+    isSpectator || !isMyTurn
+      ? `Waiting for ${currentPlayer?.handle ?? 'the next player'}...`
+      : myTurnMessage;
 
   return (
     <div style={page}>
@@ -146,25 +156,16 @@ export default function GameTable() {
         </div>
       </div>
 
-      <PlayerTiles
-        players={seats
-          .filter((p: Player) => p.playerId !== myPlayerId)
-          // `player_list` is what says which seats are bots; the game state does not.
-          .map((p: Player) => ({ ...p, isBot: botIds.has(p.playerId) }))}
-        teamOf={playerId => teamOf(gameState, playerId)}
-        onSelect={setModalPlayer}
-      />
-
-      <Trick
-        seats={seats}
+      <TableSeats
+        // `player_list` is what says which seats are bots; the game state does not.
+        seats={seats.map((p: Player) => ({ ...p, isBot: botIds.has(p.playerId) }))}
         trick={trick}
         myPlayerId={myPlayerId}
         currentPlayerId={currentPlayer?.playerId}
         leaderId={leaderId}
         teamOf={playerId => teamOf(gameState, playerId)}
-        lastWinnerHandle={
-          lastTrick ? seats.find((p: Player) => p.playerId === lastTrick.winner)?.handle ?? null : null
-        }
+        lastWinnerHandle={winnerHandle}
+        onSelect={setModalPlayer}
       />
 
       {!isSpectator && (
@@ -172,6 +173,7 @@ export default function GameTable() {
           <Hand
             cards={hand}
             playable={isMyTurn && !hasPlayed}
+            legalMoves={legalMoves}
             playedCard={playedCard}
             onPlay={onPlayCard}
           />
@@ -192,6 +194,8 @@ export default function GameTable() {
       )}
 
       {error && <div style={{ color: 'red', marginTop: 12, textAlign: 'center' }}>{error}</div>}
+
+      <RoundHistory results={results} seats={seats} />
 
       <div style={{ marginTop: 18, textAlign: 'center' }}>
         <button type="button" style={button} onClick={() => socket?.emit('leave_room')}>
