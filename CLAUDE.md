@@ -9,9 +9,23 @@ This is a Gongzhu (Chinese trick-taking card game) web application with real-tim
 ## Architecture
 
 **Monorepo Structure:**
-- `/backend/` - Node.js Express server with Socket.IO for real-time communication
+- `/backend/src/engine/` - Pure, deterministic rules engine (no sockets, no timers, no globals)
+- `/backend/src/selfplay/` - Headless bot-vs-bot harness that generates training data
+- `/backend/index.js` - Express + Socket.IO server for real-time play
 - `/frontend/` - React TypeScript application with Socket.IO client
 - Root package.json exists but project uses separate frontend/backend package management
+
+**Rules engine (`backend/src/engine/`):**
+- Every function takes a state and returns a new one, so the same code backs the
+  multiplayer server, the unit tests, and the self-play harness.
+- Deals are seeded and reproducible; hand N of a seed is derivable without replaying
+  hands 1..N-1.
+- `observation(match, playerId)` returns only what one player may legitimately see.
+- See `backend/src/engine/README.md` for the full ruleset and citations.
+
+NOTE: `backend/index.js` still contains its own older copy of the game logic and has
+not yet been migrated onto the engine. The engine is the source of truth for rules;
+treat anything in `index.js` that disagrees with it as a bug to be migrated away.
 
 **Real-time Communication:**
 - Backend uses Socket.IO server on port 4000
@@ -49,16 +63,25 @@ cd frontend && npm run build  # Production build
 
 **Testing:**
 ```bash
-# Run all tests (recommended)
-./test.sh
-
-# Individual test suites
-cd backend && npm test                    # Unit tests for game logic
+cd backend && npm test                   # Engine + self-play tests (the real suite)
+cd backend && npm run test:engine        # Rules engine only
+cd backend && npm run test:selfplay      # Self-play harness only
 cd backend && npm run test:integration   # Socket.IO integration tests
 cd backend && npm run test:llm           # LLM bot player tests
-cd backend && npm run test:all           # All backend tests
+cd backend && npm run test:all           # Everything
 cd frontend && npm test                  # React component tests
+cd frontend && npx tsc --noEmit          # Typecheck
 ```
+
+Tests import production code directly. Never re-implement game logic inside a test
+file — that was the previous state of `test/game-logic.test.js`, and it meant the
+suite passed regardless of what the server actually did.
+
+**Self-play / training data:**
+```bash
+cd backend && npm run selfplay -- --games 1000 --out data/selfplay.jsonl
+```
+See `backend/src/selfplay/README.md` for the record format.
 
 **Test Coverage:**
 - Backend: Game logic, scoring, trick resolution, Socket.IO communication, LLM bot integration
@@ -70,18 +93,27 @@ cd frontend && npm test                  # React component tests
 ## Key Implementation Details
 
 **Card Game Logic:**
-- 52-card deck, 13 cards per player
-- Trick-taking with suit-following rules
-- Scoring: Hearts (-10 to -50), Q♠ (-100), J♦ (+100), 10♣ (doubles/+50)
-- "Shooting the moon" (collecting all hearts) = +200 points
-- Scoring is based on teams of pairs of players; teams are chosen randomly; two players per team and the team score is the summation of individual scores
-- After a game ends, the teams can optionally choose to continue playing; the teams stay the same and the winning team is the team that reaches +1000 points first or is not the team that reaches -1000 points first
+- 52-card deck, 13 cards per player, no trump; highest card of the led suit takes the trick
+- Holder of 2♣ leads the first hand and must play it; later hands are led by the pig-taker
+- Q♠ (豬) −100, J♦ (羊) +100, 10♣ (變壓器) +50 alone else doubles that player's total
+- Hearts: A/K/Q/J = −50/−40/−30/−20, 10♥–5♥ = −10 each, 4♥/3♥/2♥ = 0
+- A `pips` variant (number cards score their pip value, except 4♥ = −10) is selectable;
+  both tables total −200 across the suit
+- 全紅 (all hearts) +200, +300 with the pig, 小滿貫 +400, 大滿貫 +800, fully exposed +3200
+- 亮牌 (exposure) doubling is implemented in scoring; the declare phase is behind
+  `options.exposuresEnabled` and off by default
+- Individual scores are the source of truth. Teams, when configured, are a pure
+  aggregation on top — never a separate scoring path
+- A match ends when any side reaches +1000 or −1000; simultaneous crossings resolve to
+  the highest total, so the winner is never ambiguous
 
 **Player Management:**
-- Players register with handle + persistent playerId
-- Socket.IO manages connections/disconnections
-- Game state tracks both socket IDs and player handles
-- Player identification: socket.id used for internal game state, handles for UI display
+- Players register with a handle; identity is currently the raw `socket.id`
+- KNOWN GAP: there is no persistent player id and no localStorage. A refresh makes you
+  a new player and you lose your seat. Reconnection is not implemented — a disconnect
+  mid-hand wedges the table, because the departed socket id stays in `playerOrder` and
+  no human or bot can ever take its turn
+- KNOWN GAP: a single global game and player map, so only one table can exist per server
 
 **UI Features:**
 - Team-based scoring display (players 0&2 vs 1&3)
@@ -111,6 +143,8 @@ cd frontend && npm test                  # React component tests
 ## Development Notes
 
 - Backend logs to `backend.log`, frontend to `frontend.log` when using test script
-- No linting or type checking commands currently configured
+- CI runs on every push (`.github/workflows/ci.yml`): backend tests, frontend typecheck
+  and build, plus a self-play smoke run
+- No linter configured yet
 - Game state is not persisted - restarting backend resets all games
 - CORS configured to allow all origins for development
