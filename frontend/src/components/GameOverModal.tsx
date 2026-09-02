@@ -22,6 +22,7 @@ export interface GameOverData {
 function ResultRow({ won, children }: { won: boolean; children: ReactNode }) {
   return (
     <div
+      data-testid="result-row"
       style={{
         padding: 12,
         margin: '8px 0',
@@ -105,7 +106,7 @@ export default function GameOverModal({
 
   return (
     <div style={overlay}>
-      <div style={modalCard}>
+      <div role="dialog" aria-modal="true" aria-label="Results" style={modalCard}>
         <h2>{data.gameEnded ? 'Game Over!' : 'Round Over'}</h2>
 
         <h3>{teamInfo ? 'Team Scores' : 'Scores'}</h3>

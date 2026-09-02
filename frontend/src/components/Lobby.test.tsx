@@ -1,11 +1,10 @@
 import React from 'react';
-import { act, render, screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { PlayerProvider } from '../PlayerContext';
 import type { RoomListing, RoomState } from '../PlayerContext';
 import Lobby from './Lobby';
 import { createMockSocket, MockSocket } from '../test-utils/mockSocket';
+import { renderWithProviders } from '../test-utils/renderWithProviders';
 
 let mockSocketInstance: MockSocket;
 jest.mock('socket.io-client', () => ({ io: () => mockSocketInstance }));
@@ -31,17 +30,10 @@ const roomState: RoomState = {
 };
 
 function renderLobby() {
-  render(
-    <PlayerProvider>
-      <MemoryRouter initialEntries={['/lobby']}>
-        <Routes>
-          <Route path="/lobby" element={<Lobby />} />
-          <Route path="/room/:code" element={<div>Room page</div>} />
-        </Routes>
-      </MemoryRouter>
-    </PlayerProvider>
+  renderWithProviders(
+    { '/lobby': <Lobby />, '/room/:code': <div>Room page</div> },
+    { socket: mockSocketInstance, route: '/lobby' }
   );
-  act(() => mockSocketInstance.fire('connect'));
 }
 
 /** Sets a handle and lets the server acknowledge it, which unlocks the room controls. */
@@ -61,12 +53,12 @@ describe('Lobby', () => {
     expect(screen.queryByRole('button', { name: 'Create room' })).not.toBeInTheDocument();
 
     await registerHandle();
-    expect(mockSocketInstance.emit).toHaveBeenCalledWith('register_handle', {
+    expect(mockSocketInstance.lastEmit('register_handle')).toEqual({
       handle: 'Bob',
       playerId: 'me',
     });
     expect(screen.getByRole('button', { name: 'Create room' })).toBeInTheDocument();
-    expect(mockSocketInstance.emit).toHaveBeenCalledWith('list_rooms');
+    expect(mockSocketInstance.hasEmitted('list_rooms')).toBe(true);
   });
 
   it('creates a room with the name and options the player chose', async () => {
@@ -79,19 +71,54 @@ describe('Lobby', () => {
     await userEvent.selectOptions(screen.getByLabelText('Hearts'), 'pips');
     await userEvent.click(screen.getByRole('button', { name: 'Create room' }));
 
-    expect(mockSocketInstance.emit).toHaveBeenCalledWith('create_room', {
+    expect(mockSocketInstance.lastEmit('create_room')).toEqual({
       name: 'Friday night',
       options: { variant: 'pips', teams: false, targetScore: 1000, visibility: 'private' },
     });
   });
 
-  it('joins by a typed code', async () => {
+  it('creates a room with the defaults when nothing is filled in', async () => {
+    renderLobby();
+    await registerHandle();
+    await userEvent.click(screen.getByRole('button', { name: 'Create room' }));
+
+    expect(mockSocketInstance.lastEmit('create_room')).toEqual({
+      name: '',
+      options: { variant: 'standard', teams: true, targetScore: 1000, visibility: 'public' },
+    });
+  });
+
+  it('trims the room name and sends the target score as a number', async () => {
     renderLobby();
     await registerHandle();
 
-    await userEvent.type(screen.getByLabelText('Room code'), 'kj7p2m');
+    await userEvent.type(screen.getByLabelText('Room name'), '  Friday night  ');
+    await userEvent.clear(screen.getByLabelText('Target score'));
+    await userEvent.type(screen.getByLabelText('Target score'), '500');
+    await userEvent.click(screen.getByRole('button', { name: 'Create room' }));
+
+    expect(mockSocketInstance.lastEmit('create_room')).toEqual({
+      name: 'Friday night',
+      options: { variant: 'standard', teams: true, targetScore: 500, visibility: 'public' },
+    });
+  });
+
+  it('joins by a typed code, upper-cased and trimmed', async () => {
+    renderLobby();
+    await registerHandle();
+
+    await userEvent.type(screen.getByLabelText('Room code'), ' kj7p2m ');
     await userEvent.click(screen.getByRole('button', { name: 'Join' }));
-    expect(mockSocketInstance.emit).toHaveBeenCalledWith('join_room', { code: 'KJ7P2M' });
+    expect(mockSocketInstance.lastEmit('join_room')).toEqual({ code: 'KJ7P2M' });
+  });
+
+  it('cannot join until a code is typed', async () => {
+    renderLobby();
+    await registerHandle();
+
+    expect(screen.getByRole('button', { name: 'Join' })).toBeDisabled();
+    await userEvent.type(screen.getByLabelText('Room code'), 'K');
+    expect(screen.getByRole('button', { name: 'Join' })).toBeEnabled();
   });
 
   it('lists the public rooms and joins the one that is clicked', async () => {
@@ -106,7 +133,30 @@ describe('Lobby', () => {
     expect(screen.getByText(/KJ7P2M · no host · 0\/4/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: "Join Ann's table" }));
-    expect(mockSocketInstance.emit).toHaveBeenCalledWith('join_room', { code: 'KJ7P2M' });
+    expect(mockSocketInstance.lastEmit('join_room')).toEqual({ code: 'KJ7P2M' });
+  });
+
+  it('says how far along each listed room is', async () => {
+    renderLobby();
+    await registerHandle();
+    act(() =>
+      mockSocketInstance.fire('room_list', [
+        { ...listing, code: 'AAAAAA', phase: 'playing' },
+        { ...listing, code: 'BBBBBB', phase: 'handOver' },
+        { ...listing, code: 'CCCCCC', phase: 'matchOver' },
+      ])
+    );
+
+    expect(screen.getByText(/AAAAAA · Ann · 2\/4 · In progress/)).toBeInTheDocument();
+    expect(screen.getByText(/BBBBBB · Ann · 2\/4 · Between hands/)).toBeInTheDocument();
+    expect(screen.getByText(/CCCCCC · Ann · 2\/4 · Finished/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Public rooms (3)' })).toBeInTheDocument();
+  });
+
+  it('offers to create the first room when the lobby is empty', async () => {
+    renderLobby();
+    await registerHandle();
+    expect(screen.getByText('No public rooms yet — create one')).toBeInTheDocument();
   });
 
   it('moves to the room page once the server confirms the room', async () => {
@@ -121,5 +171,26 @@ describe('Lobby', () => {
     await registerHandle();
     act(() => mockSocketInstance.fire('room_error', { reason: 'No room with code ZZZZZZ' }));
     expect(screen.getByRole('alert')).toHaveTextContent('No room with code ZZZZZZ');
+  });
+
+  it('reports a refusal the server gave no reason for', async () => {
+    renderLobby();
+    await registerHandle();
+    act(() => mockSocketInstance.fire('room_error', {}));
+    expect(screen.getByRole('alert')).toHaveTextContent('Something went wrong');
+  });
+
+  it('clears the last refusal when the player tries again', async () => {
+    renderLobby();
+    await registerHandle();
+    act(() => mockSocketInstance.fire('room_error', { reason: 'Room is full' }));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create room' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    act(() => mockSocketInstance.fire('room_error', { reason: 'Room is full' }));
+    await userEvent.type(screen.getByLabelText('Room code'), 'KJ7P2M');
+    await userEvent.click(screen.getByRole('button', { name: 'Join' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

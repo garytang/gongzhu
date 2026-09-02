@@ -11,8 +11,14 @@ interface CollectedCardsModalProps {
 
 export default function CollectedCardsModal({ handle, cards, onClose }: CollectedCardsModalProps) {
   return (
-    <div style={overlay} onClick={onClose}>
-      <div style={{ ...modalCard, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+    <div data-testid="modal-backdrop" style={overlay} onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${handle}'s collected point cards`}
+        style={{ ...modalCard, textAlign: 'center' }}
+        onClick={e => e.stopPropagation()}
+      >
         <div style={{ fontWeight: 'bold', fontSize: 18, marginBottom: 8 }}>
           {handle}'s Collected Point Cards
         </div>
