@@ -7,15 +7,16 @@ import CollectedCardsModal from './CollectedCardsModal';
 import GameOverModal, { GameOverData } from './GameOverModal';
 import Hand from './Hand';
 import PlayerTiles from './PlayerTiles';
-import Scoreboard from './Scoreboard';
+import Scoreboard, { IndividualScores } from './Scoreboard';
 import Trick from './Trick';
-import { page } from './styles';
+import { button, page } from './styles';
 
 /** How long the "X won the trick" message stays up after the trick is cleared. */
 const TRICK_FLASH_MS = 2500;
 
 export default function GameTable() {
-  const { handle, hand, gameState, socket, playerId: myPlayerId } = usePlayer();
+  const { handle, hand, gameState, socket, playerId: myPlayerId, isHost, isSpectator, room, players } =
+    usePlayer();
   const [playedCard, setPlayedCard] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<GameOverData | null>(null);
@@ -94,6 +95,7 @@ export default function GameTable() {
   const ledSuit = trick.length > 0 && trick[0].card ? getSuit(trick[0].card) : null;
   const teamScores = displayTeamScores(gameState);
   const myPointCards = pointCards(collected[myPlayerId] || []);
+  const botIds = new Set(players.filter((p: Player) => p.isBot).map((p: Player) => p.playerId));
 
   const onPlayCard = (card: string) => {
     if (!isMyTurn || hasPlayed || !socket) return;
@@ -101,7 +103,9 @@ export default function GameTable() {
     socket.emit('play_card', card);
   };
 
-  const turnMessage = isMyTurn
+  const turnMessage = isSpectator
+    ? `Waiting for ${currentPlayer?.handle ?? 'the next player'}...`
+    : isMyTurn
     ? hasPlayed
       ? 'Waiting for others...'
       : ledSuit
@@ -111,11 +115,21 @@ export default function GameTable() {
 
   return (
     <div style={page}>
-      <Scoreboard
-        team1={teamScores.team1}
-        team2={teamScores.team2}
-        myTeam={teamOf(gameState, myPlayerId)}
-      />
+      {gameState.teams ? (
+        <Scoreboard
+          team1={teamScores.team1}
+          team2={teamScores.team2}
+          myTeam={teamOf(gameState, myPlayerId)}
+        />
+      ) : (
+        <IndividualScores seats={seats} scores={gameState.scores} myPlayerId={myPlayerId} />
+      )}
+
+      {isSpectator && (
+        <div style={{ textAlign: 'center', marginBottom: 12, color: '#666', fontWeight: 'bold' }}>
+          Spectating
+        </div>
+      )}
 
       <div role="status" style={{ textAlign: 'center', marginBottom: 12, fontSize: 16, fontWeight: 500 }}>
         <div style={{ color: isMyTurn ? '#2e7d32' : '#555' }}>{turnMessage}</div>
@@ -127,7 +141,10 @@ export default function GameTable() {
       </div>
 
       <PlayerTiles
-        players={seats.filter((p: Player) => p.playerId !== myPlayerId)}
+        players={seats
+          .filter((p: Player) => p.playerId !== myPlayerId)
+          // `player_list` is what says which seats are bots; the game state does not.
+          .map((p: Player) => ({ ...p, isBot: botIds.has(p.playerId) }))}
         teamOf={playerId => teamOf(gameState, playerId)}
         onSelect={setModalPlayer}
       />
@@ -144,27 +161,37 @@ export default function GameTable() {
         }
       />
 
-      <Hand
-        cards={hand}
-        playable={isMyTurn && !hasPlayed}
-        playedCard={playedCard}
-        onPlay={onPlayCard}
-      />
+      {!isSpectator && (
+        <>
+          <Hand
+            cards={hand}
+            playable={isMyTurn && !hasPlayed}
+            playedCard={playedCard}
+            onPlay={onPlayCard}
+          />
 
-      <div style={{ marginTop: 18, textAlign: 'center' }}>
-        <div style={{ fontWeight: 'bold', fontSize: 16, marginBottom: 4 }}>Your Collected Point Cards</div>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 4, flexWrap: 'wrap', fontSize: 20 }}>
-          {myPointCards.length === 0 ? (
-            <span style={{ color: '#888', fontSize: 16 }}>None</span>
-          ) : (
-            myPointCards.map((card, idx) => (
-              <span key={idx} style={{ color: cardColor(card) }}>{card}</span>
-            ))
-          )}
-        </div>
-      </div>
+          <div style={{ marginTop: 18, textAlign: 'center' }}>
+            <div style={{ fontWeight: 'bold', fontSize: 16, marginBottom: 4 }}>Your Collected Point Cards</div>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 4, flexWrap: 'wrap', fontSize: 20 }}>
+              {myPointCards.length === 0 ? (
+                <span style={{ color: '#888', fontSize: 16 }}>None</span>
+              ) : (
+                myPointCards.map((card, idx) => (
+                  <span key={idx} style={{ color: cardColor(card) }}>{card}</span>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       {error && <div style={{ color: 'red', marginTop: 12, textAlign: 'center' }}>{error}</div>}
+
+      <div style={{ marginTop: 18, textAlign: 'center' }}>
+        <button type="button" style={button} onClick={() => socket?.emit('leave_room')}>
+          Leave room
+        </button>
+      </div>
 
       {modalPlayer && (
         <CollectedCardsModal
@@ -179,6 +206,8 @@ export default function GameTable() {
           data={gameOver}
           gameState={gameState}
           myHandle={handle}
+          canControl={isHost}
+          hostHandle={room?.host?.handle}
           onClose={() => setGameOver(null)}
           onContinue={() => {
             setGameOver(null);

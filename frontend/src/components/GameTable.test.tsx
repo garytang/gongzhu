@@ -113,6 +113,17 @@ describe('GameTable', () => {
     expect(screen.getByText('Bob won the trick')).toBeInTheDocument();
   });
 
+  it('marks the seats the room filled with bots', () => {
+    renderTable(gameState());
+    expect(within(screen.getByRole('button', { name: /Dan/ })).queryByText('🤖')).not.toBeInTheDocument();
+
+    // Which seats are bots comes from the room's player list, not the game state.
+    act(() =>
+      mockSocketInstance.fire('player_list', [...seats.slice(0, 3), { ...seats[3], isBot: true }])
+    );
+    expect(within(screen.getByRole('button', { name: /Dan/ })).getByText('🤖')).toBeInTheDocument();
+  });
+
   it('shows a player\'s collected point cards on demand', async () => {
     renderTable(gameState());
     act(() => mockSocketInstance.fire('collected', { p1: ['Q♠', '3♠', '2♥'] }));

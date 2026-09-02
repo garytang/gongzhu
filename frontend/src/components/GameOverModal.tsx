@@ -1,66 +1,91 @@
-import React from 'react';
-import type { GameState, Player } from '../PlayerContext';
+import React, { ReactNode } from 'react';
+import type { GameState } from '../PlayerContext';
 import { cardColor, pointCards } from '../lib/cards';
-import { sumTeamScore, teamMembers } from '../lib/scores';
 import { modalCard, overlay, button, primaryButton } from './styles';
 
 export interface GameOverData {
   scores: Record<string, number>;
   collected: Record<string, string[]>;
+  /** Null when the room scores individuals, which is what selects the summary below. */
   teamInfo?: {
     team1: { players: string[]; roundScore: number; cumulativeScore: number };
     team2: { players: string[]; roundScore: number; cumulativeScore: number };
-  };
+  } | null;
   gameEnded?: boolean;
   winningTeam?: number | null;
+  /** Handles of the winning players. The only form of the result without teams. */
+  winners?: string[];
 }
 
-interface TeamSummary {
-  team: 1 | 2;
-  players: string;
-  roundScore: number;
-  cumulativeScore?: number;
-  isWinner: boolean;
+/** One result card. `won` gives it the winner's green treatment. */
+function ResultRow({ won, children }: { won: boolean; children: ReactNode }) {
+  return (
+    <div
+      style={{
+        padding: 12,
+        margin: '8px 0',
+        borderRadius: 6,
+        background: won ? '#e8f5e8' : '#f5f5f5',
+        border: won ? '2px solid #4CAF50' : '1px solid #ddd',
+      }}
+    >
+      {children}
+    </div>
+  );
 }
 
-function handlesFor(playerIds: string[], seats: Player[]): string {
-  return playerIds.map(id => seats.find(p => p.playerId === id)?.handle || id).join(' & ');
+/** Team totals, including the cumulative match scores only the backend knows. */
+function TeamResults({ teamInfo, winningTeam }: {
+  teamInfo: NonNullable<GameOverData['teamInfo']>;
+  winningTeam?: number | null;
+}) {
+  return (
+    <div style={{ marginBottom: 20 }}>
+      {([1, 2] as const).map(team => {
+        const info = team === 1 ? teamInfo.team1 : teamInfo.team2;
+        const won = winningTeam === team;
+        return (
+          <ResultRow key={team} won={won}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <strong>Team {team} ({info.players.join(' & ')})</strong>
+              {won && <span style={{ color: '#4CAF50', fontSize: 24 }}>🏆</span>}
+            </div>
+            <div>Round: {info.roundScore}</div>
+            <div>Total: <strong>{info.cumulativeScore}</strong></div>
+          </ResultRow>
+        );
+      })}
+    </div>
+  );
 }
 
-/**
- * Prefers the backend's `teamInfo` (which carries cumulative totals). Without it,
- * team totals are summed from the per-player scores in the `game_over` payload.
- */
-function summarizeTeams(data: GameOverData, gameState: GameState | null): TeamSummary[] {
-  if (data.teamInfo) {
-    return ([1, 2] as const).map(team => {
-      const info = team === 1 ? data.teamInfo!.team1 : data.teamInfo!.team2;
-      return {
-        team,
-        players: info.players.join(' & '),
-        roundScore: info.roundScore,
-        cumulativeScore: info.cumulativeScore,
-        isWinner: data.winningTeam === team,
-      };
-    });
-  }
-
-  const seats = gameState?.playerHandles || [];
-  const memberIds = teamMembers(gameState);
-  const totals = memberIds.map(ids => sumTeamScore(data.scores, ids));
-
-  return ([1, 2] as const).map((team, i) => ({
-    team,
-    players: handlesFor(memberIds[i], seats),
-    roundScore: totals[i],
-    isWinner: totals[0] > totals[1] ? team === 1 : team === 2,
-  }));
+/** Per-player totals, shown when the room scores individuals rather than teams. */
+function IndividualResults({ data, gameState }: { data: GameOverData; gameState: GameState | null }) {
+  const winners = data.winners || [];
+  return (
+    <div style={{ marginBottom: 20 }}>
+      {(gameState?.playerHandles || []).map(seat => {
+        const won = winners.includes(seat.handle);
+        return (
+          <ResultRow key={seat.playerId} won={won}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+              <strong>{seat.handle}</strong>
+              <span>Round: {data.scores[seat.playerId] ?? 0} {won && '🏆'}</span>
+            </div>
+          </ResultRow>
+        );
+      })}
+    </div>
+  );
 }
 
 interface GameOverModalProps {
   data: GameOverData;
   gameState: GameState | null;
   myHandle: string;
+  /** Only the room's host may deal the next hand or start a new game. */
+  canControl: boolean;
+  hostHandle?: string;
   onClose: () => void;
   onContinue: () => void;
   onNewGame: () => void;
@@ -70,41 +95,25 @@ export default function GameOverModal({
   data,
   gameState,
   myHandle,
+  canControl,
+  hostHandle,
   onClose,
   onContinue,
   onNewGame,
 }: GameOverModalProps) {
-  const teams = summarizeTeams(data, gameState);
+  const { teamInfo } = data;
 
   return (
     <div style={overlay}>
       <div style={modalCard}>
         <h2>{data.gameEnded ? 'Game Over!' : 'Round Over'}</h2>
 
-        <h3>Team Scores</h3>
-        <div style={{ marginBottom: 20 }}>
-          {teams.map(team => (
-            <div
-              key={team.team}
-              style={{
-                padding: 12,
-                margin: '8px 0',
-                borderRadius: 6,
-                background: team.isWinner ? '#e8f5e8' : '#f5f5f5',
-                border: team.isWinner ? '2px solid #4CAF50' : '1px solid #ddd',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <strong>Team {team.team} ({team.players})</strong>
-                {team.isWinner && <span style={{ color: '#4CAF50', fontSize: 24 }}>🏆</span>}
-              </div>
-              <div>Round: {team.roundScore}</div>
-              {team.cumulativeScore !== undefined && (
-                <div>Total: <strong>{team.cumulativeScore}</strong></div>
-              )}
-            </div>
-          ))}
-        </div>
+        <h3>{teamInfo ? 'Team Scores' : 'Scores'}</h3>
+        {teamInfo ? (
+          <TeamResults teamInfo={teamInfo} winningTeam={data.winningTeam} />
+        ) : (
+          <IndividualResults data={data} gameState={gameState} />
+        )}
 
         <h3>Collected Cards This Round</h3>
         <ul style={{ listStyle: 'none', padding: 0, marginBottom: 20 }}>
@@ -129,12 +138,22 @@ export default function GameOverModal({
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
           <button style={button} onClick={onClose}>Close</button>
-          {!data.gameEnded && (
-            <button style={primaryButton} onClick={onContinue}>Continue (Same Teams)</button>
+          {canControl ? (
+            <>
+              {!data.gameEnded && (
+                <button style={primaryButton} onClick={onContinue}>
+                  {teamInfo ? 'Continue (Same Teams)' : 'Continue (Same Seats)'}
+                </button>
+              )}
+              <button style={{ ...primaryButton, background: '#4CAF50' }} onClick={onNewGame}>
+                {data.gameEnded ? 'Start New Game' : 'New Game (New Seats)'}
+              </button>
+            </>
+          ) : (
+            <span style={{ alignSelf: 'center', color: '#666' }}>
+              Waiting for {hostHandle || 'the host'}…
+            </span>
           )}
-          <button style={{ ...primaryButton, background: '#4CAF50' }} onClick={onNewGame}>
-            {data.gameEnded ? 'Start New Game' : 'New Game (New Teams)'}
-          </button>
         </div>
       </div>
     </div>

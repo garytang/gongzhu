@@ -24,27 +24,56 @@ This is a Gongzhu (Chinese trick-taking card game) web application with real-tim
 - See `backend/src/engine/README.md` for the full ruleset and citations.
 
 **Server (`backend/src/server/`):** `createGongzhuServer(options)` builds the express
-app, the Socket.IO server and one table, and returns them without listening, so tests
-drive the real server on an ephemeral port. It holds no rules of its own — legality,
-trick resolution and scoring all come from the engine. Delays (`botDelayMs`,
-`trickDelayMs`) are options so tests need not wait for them.
+app and the Socket.IO server and returns them without listening, so tests drive the real
+server on an ephemeral port. It holds no rules of its own — legality, trick resolution
+and scoring all come from the engine. Delays (`botDelayMs`, `trickDelayMs`,
+`emptyRoomTtlMs`) are options so tests need not wait for them. `rooms.js` holds the room
+model — join codes, options, seats, spectators, host succession — with no knowledge of
+sockets or the engine.
+
+**Rooms.** One server hosts many tables. A room owns its members, its options, its bots
+and one engine session, and every table event is emitted to the Socket.IO room named by
+the six-character join code. `/room/CODE` on the frontend is the invite link.
+- Lifecycle: `waiting` → `playing` → `handOver` / `matchOver`, and back to `playing` when
+  the host continues or starts a new game. Phase is derived from the engine, never
+  tracked separately.
+- An empty room is deleted on a timer (`emptyRoomTtlMs`, five minutes by default) rather
+  than when the last member drops, so a refresh does not destroy the table.
+- The creator hosts; the role passes to the next member when the host leaves. Only the
+  host may `start_game`, `continue_game`, `update_room_options` or `kick`.
+- Four seats. A fifth joiner spectates — they see the table and get no hand — and takes a
+  seat when one frees before the next hand is dealt. Bots fill whatever seats are still
+  empty when the host starts a hand.
+- Room options: `variant` (`standard` | `pips`), `teams` (on/off), `targetScore`,
+  `visibility` (`public` lists it in the lobby, `private` is invite-link only).
 
 **Real-time Communication:**
 - Backend uses Socket.IO server on port 4000
-- Frontend connects to `http://localhost:4000` 
-- Client to server: `register_handle`, `start_game`, `continue_game`, `play_card`
-- Server to client: `player_list`, `game_started`, `game_state`, `deal_hand`, `legal_moves`, `collected`, `game_over`, `invalid_play`
-- `legal_moves` accompanies every `deal_hand` and lists exactly the cards that player may play now (empty when it is not their turn)
+- Frontend connects to `http://localhost:4000`
+- Client to server: `register_handle`, `create_room`, `join_room`, `leave_room`,
+  `list_rooms`, `update_room_options`, `kick`, `start_game`, `continue_game`, `play_card`
+- Server to client, to the caller: `handle_registered`, `room_joined`, `room_left`,
+  `room_error`, `room_list`, `invalid_play`
+- Server to client, to one room: `room_state`, `player_list`, `game_started`,
+  `game_state`, `deal_hand`, `legal_moves`, `collected`, `trick_won`, `game_over`
+- `deal_hand` and `legal_moves` go to one player; `legal_moves` accompanies every
+  `deal_hand` and lists exactly the cards that player may play now (empty when it is not
+  their turn, and while a completed trick is being displayed)
+- `room_list` is pushed to sockets that are not in a room, whenever the public rooms change
 
 **Game State Management:**
-- Backend maintains single global game state in memory
-- Player identification uses both socket.id and persistent playerId (stored in localStorage)
-- Four seats: the first four registered humans are seated and the rest are filled with bots on `start_game`
+- All state is in memory, per room: `Map<code, room>`, each with its own engine session
+  and its own bot registry
+- Identity is the `socket.id`, resolved in exactly one place — `memberKey(socket)` in
+  `createServer.js` — so a persistent id (WS-06) is a one-function change
 - Card dealing, trick resolution, and scoring handled server-side
 
 **Frontend State:**
-- Uses React Context (`PlayerContext`) for global state management
-- Persistent player ID generation using crypto.randomUUID()
+- Uses React Context (`PlayerContext`) for global state management: `room`, `roomList`,
+  `roomError`, `isHost`, `isSpectator`, `connectionStatus`, plus the table state
+- Routes: `/login`, `/lobby`, `/room/:code`. The room route renders the pre-game screen
+  while the room is `waiting` and the table afterwards, so one URL is shareable
+  throughout. The static host serves it with `serve -s`, which rewrites deep links
 - Real-time hand updates and game state synchronization
 
 ## Development Commands
@@ -112,15 +141,21 @@ See `backend/src/selfplay/README.md` for the record format.
   the highest total, so the winner is never ambiguous
 
 **Player Management:**
-- Players register with a handle; identity is currently the raw `socket.id`
+- Players register a handle, then create or join a room; identity is the raw `socket.id`
 - KNOWN GAP: there is no persistent player id and no localStorage. A refresh makes you
   a new player and you lose your seat. Reconnection is not implemented — a disconnect
   mid-hand wedges the table, because the departed socket id stays in `playerOrder` and
-  no human or bot can ever take its turn
-- KNOWN GAP: a single global game and player map, so only one table can exist per server
+  no human or bot can ever take its turn. The room outlives the refresh, so the player
+  rejoins as a spectator rather than losing the table entirely
 
 **UI Features:**
-- Team-based scoring display (players 0&2 vs 1&3)
+- Lobby: create a room (name, visibility, variant, teams, target score), a public room
+  list, and join by code
+- Room screen: the code shown large with a copy-invite-link button, seated players with a
+  host badge, spectators, options (editable by the host), host-only Start, and Leave
+- Spectator view: the table with no hand and a "Spectating" label
+- Team-based scoring display (players 0&2 vs 1&3), or per-player scores when the room has
+  teams off
 - Real-time trick display with card color coding  
 - Live progress display of each player's collected point cards
 - Clickable player tiles to view collected cards in modal
@@ -140,7 +175,9 @@ See `backend/src/selfplay/README.md` for the record format.
 - Robust fallback to enhanced rule-based AI when LLM fails
 - Game memory tracking played cards and player tendencies
 - Strategic decision making with various gameplay strategies
-- API endpoints for bot management: `/api/bots/create`, `/api/bots/list`, `/api/bots/clear`
+- Bots are created by `start_game`, which only a room's host may send, and belong to that
+  room. There is no bot HTTP API: `/api/bots/*` was removed because it was unauthenticated
+  on a public URL and would let a stranger seat bots at someone else's table
 - `LLM_PROVIDER` (anthropic | openrouter | google) picks which provider fills empty seats; unset = first key present. Keys: `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`; models: `*_MODEL`
 - Seamless integration with existing Socket.IO game flow
 
