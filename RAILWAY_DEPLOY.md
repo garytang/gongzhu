@@ -40,6 +40,8 @@ Backend (`gongzhu-backend`):
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Anthropic API directly. Default model `claude-haiku-4-5` |
 | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | OpenRouter. Default model `anthropic/claude-haiku-4.5`; any OpenRouter model id works |
 | `GOOGLE_API_KEY`, `GOOGLE_MODEL` | Google Gemini. Default model `gemini-3.5-flash-lite` |
+| `LLM_TIMEOUT_MS` | Per-move deadline before a bot plays a heuristic card instead. Default 8000; a timed-out move logs `LLM call exceeded` |
+| `LLM_REASONING_EFFORT` | OpenRouter only: `none`, `low` (default), `medium`, `high`. Lower is faster |
 
 With no provider key at all the server starts and fills seats with rule-based bots.
 `PORT` is injected by Railway; the server reads it and binds 4000 only in local dev.

@@ -32,7 +32,21 @@ const DISPLAY_NAMES = {
   google: 'Gemini',
 };
 
-const DEFAULT_TIMEOUT_MS = 10000;
+/**
+ * Per-request deadline. The policy layer passes it through on every call, so this is
+ * the one number a direct caller of a provider gets too. Reasoning models routinely need
+ * more than five seconds; a heuristic fallback move is a worse outcome than a short wait.
+ */
+const DEFAULT_TIMEOUT_MS = 8000;
+
+/**
+ * Reasoning effort asked of the model on every move. Choosing one card does not need deep
+ * deliberation, and latency is what a live table feels. Passed to every provider as
+ * `options.reasoningEffort` (none | low | medium | high); OpenRouter maps it to its
+ * unified `reasoning` field, which non-reasoning models ignore. Anthropic and Google
+ * requests do not map it yet and run without extended thinking.
+ */
+const DEFAULT_REASONING_EFFORT = 'low';
 const DEFAULT_MAX_TOKENS = 300;
 
 class AnthropicProvider {
@@ -101,6 +115,16 @@ class GoogleProvider {
   }
 }
 
+/** The chat-completions body for one move. Kept separate from the HTTP call so it can be asserted on. */
+function openRouterRequestBody(model, prompt, options = {}) {
+  return {
+    model,
+    messages: [{ role: 'user', content: prompt }],
+    max_tokens: options.maxTokens || DEFAULT_MAX_TOKENS,
+    reasoning: { effort: options.reasoningEffort || DEFAULT_REASONING_EFFORT },
+  };
+}
+
 class OpenRouterProvider {
   constructor(config = {}) {
     this.apiKey = config.apiKey || process.env.OPENROUTER_API_KEY;
@@ -114,11 +138,7 @@ class OpenRouterProvider {
     }
 
     try {
-      const response = await axios.post(this.baseURL, {
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: options.maxTokens || DEFAULT_MAX_TOKENS,
-      }, {
+      const response = await axios.post(this.baseURL, openRouterRequestBody(this.model, prompt, options), {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.apiKey}`,
@@ -165,6 +185,9 @@ function createLLMProvider(type, config = {}) {
 
 module.exports = {
   DEFAULT_MODELS,
+  DEFAULT_TIMEOUT_MS,
+  DEFAULT_REASONING_EFFORT,
+  openRouterRequestBody,
   PROVIDER_KEYS,
   DISPLAY_NAMES,
   AnthropicProvider,

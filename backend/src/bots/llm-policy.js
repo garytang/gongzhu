@@ -2,14 +2,9 @@
 
 const { rankOf, suitOf } = require('../engine/cards');
 const { avoidPointsPolicy } = require('../selfplay/policies');
-const { createLLMProvider } = require('./providers');
+const { createLLMProvider, DEFAULT_TIMEOUT_MS, DEFAULT_REASONING_EFFORT } = require('./providers');
 const { buildPrompt } = require('./prompt');
 
-/**
- * A move has to come back fast enough that a live table does not visibly stall. The
- * server has its own fallback, but the bot gives up on its own first.
- */
-const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_TOKENS = 300;
 
 function debug(...args) {
@@ -67,7 +62,10 @@ function createLLMPolicy(config = {}) {
     model,
     apiKey,
     providerConfig = {},
-    timeoutMs = DEFAULT_TIMEOUT_MS,
+    // A move has to come back fast enough that a live table does not visibly stall. The
+    // server has its own fallback, but the bot gives up on its own first.
+    timeoutMs = Number(process.env.LLM_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+    reasoningEffort = process.env.LLM_REASONING_EFFORT || DEFAULT_REASONING_EFFORT,
     maxTokens = DEFAULT_MAX_TOKENS,
     fallback = avoidPointsPolicy,
     name,
@@ -109,7 +107,7 @@ function createLLMPolicy(config = {}) {
         try {
           const prompt = buildPrompt(observation, ctx.names || {});
           const response = await withDeadline(
-            llm.generateResponse(prompt, { maxTokens, timeout: timeoutMs }),
+            llm.generateResponse(prompt, { maxTokens, timeout: timeoutMs, reasoningEffort }),
             timeoutMs,
           );
           debug('LLM raw response:', response);

@@ -48,6 +48,8 @@ with a 400.
 LLM_PROVIDER=openrouter    # anthropic | openrouter | google; unset = first key found
 OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY / GOOGLE_API_KEY
 OPENROUTER_MODEL=anthropic/claude-haiku-4.5
+LLM_TIMEOUT_MS=8000        # give up and play a heuristic move after this long
+LLM_REASONING_EFFORT=low   # OpenRouter only: none | low | medium | high
 LLM_BOT_DEBUG=1            # log each prompt, raw response and parsed reasoning
 ```
 
