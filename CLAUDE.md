@@ -11,7 +11,7 @@ This is a Gongzhu (Chinese trick-taking card game) web application with real-tim
 **Monorepo Structure:**
 - `/backend/src/engine/` - Pure, deterministic rules engine (no sockets, no timers, no globals)
 - `/backend/src/selfplay/` - Headless bot-vs-bot harness that generates training data
-- `/backend/index.js` - Express + Socket.IO server for real-time play
+- `/backend/src/server/` - Express + Socket.IO adapter over the engine; `index.js` only listens
 - `/frontend/` - React TypeScript application with Socket.IO client
 - Root package.json exists but project uses separate frontend/backend package management
 
@@ -23,19 +23,23 @@ This is a Gongzhu (Chinese trick-taking card game) web application with real-tim
 - `observation(match, playerId)` returns only what one player may legitimately see.
 - See `backend/src/engine/README.md` for the full ruleset and citations.
 
-NOTE: `backend/index.js` still contains its own older copy of the game logic and has
-not yet been migrated onto the engine. The engine is the source of truth for rules;
-treat anything in `index.js` that disagrees with it as a bug to be migrated away.
+**Server (`backend/src/server/`):** `createGongzhuServer(options)` builds the express
+app, the Socket.IO server and one table, and returns them without listening, so tests
+drive the real server on an ephemeral port. It holds no rules of its own — legality,
+trick resolution and scoring all come from the engine. Delays (`botDelayMs`,
+`trickDelayMs`) are options so tests need not wait for them.
 
 **Real-time Communication:**
 - Backend uses Socket.IO server on port 4000
 - Frontend connects to `http://localhost:4000` 
-- Key events: `register_handle`, `start_game`, `play_card`, `game_state`, `deal_hand`, `collected`, `game_over`
+- Client to server: `register_handle`, `start_game`, `continue_game`, `play_card`
+- Server to client: `player_list`, `game_started`, `game_state`, `deal_hand`, `legal_moves`, `collected`, `game_over`, `invalid_play`
+- `legal_moves` accompanies every `deal_hand` and lists exactly the cards that player may play now (empty when it is not their turn)
 
 **Game State Management:**
 - Backend maintains single global game state in memory
 - Player identification uses both socket.id and persistent playerId (stored in localStorage)
-- Game requires exactly 4 players to start
+- Four seats: the first four registered humans are seated and the rest are filled with bots on `start_game`
 - Card dealing, trick resolution, and scoring handled server-side
 
 **Frontend State:**
