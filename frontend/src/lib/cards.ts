@@ -48,21 +48,3 @@ export function cardColor(card: string): string {
   if (suit === '♠' || suit === '♣') return '#111';
   return 'inherit';
 }
-
-/**
- * Winner of a completed trick: highest rank of the led suit. Gongzhu has no trump,
- * so cards of other suits cannot win. Returns the winner's player id, or null if
- * the trick holds no playable card.
- */
-export function trickWinner(trick: TrickEntry[]): string | null {
-  const played = trick.filter((entry): entry is { player: string; card: string } => Boolean(entry.card));
-  if (played.length === 0) return null;
-  const ledSuit = getSuit(played[0].card);
-  let best = played[0];
-  for (const entry of played) {
-    if (getSuit(entry.card) === ledSuit && rankValue(entry.card) > rankValue(best.card)) {
-      best = entry;
-    }
-  }
-  return best.player;
-}

@@ -1,4 +1,4 @@
-import { pointCards, sortHand, trickWinner } from './cards';
+import { pointCards, sortHand } from './cards';
 
 describe('sortHand', () => {
   it('orders suits ♠ ♥ ♣ ♦ and ranks 2 → A within a suit', () => {
@@ -14,32 +14,6 @@ describe('sortHand', () => {
     const hand = ['3♦', 'A♠'];
     sortHand(hand);
     expect(hand).toEqual(['3♦', 'A♠']);
-  });
-});
-
-describe('trickWinner', () => {
-  it('picks the highest card of the led suit', () => {
-    const trick = [
-      { player: 'a', card: '5♥' },
-      { player: 'b', card: 'K♥' },
-      { player: 'c', card: '2♥' },
-      { player: 'd', card: '9♥' },
-    ];
-    expect(trickWinner(trick)).toBe('b');
-  });
-
-  it('ignores off-suit cards — there is no trump', () => {
-    const trick = [
-      { player: 'a', card: '5♣' },
-      { player: 'b', card: 'A♠' },
-      { player: 'c', card: '7♣' },
-      { player: 'd', card: 'K♥' },
-    ];
-    expect(trickWinner(trick)).toBe('c');
-  });
-
-  it('returns null for an empty trick', () => {
-    expect(trickWinner([])).toBeNull();
   });
 });
 

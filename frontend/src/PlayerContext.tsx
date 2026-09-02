@@ -21,6 +21,11 @@ export interface GameState {
     team1: number;
     team2: number;
   } | null;
+  /** The trick the server resolved most recently, and the playerId that took it. */
+  lastTrick?: {
+    trick: { player: string; card: string | null }[];
+    winner: string;
+  } | null;
 }
 
 export type RoomPhase = 'waiting' | 'playing' | 'handOver' | 'matchOver';
@@ -63,6 +68,8 @@ interface PlayerContextType {
   players: Player[];
   socket: Socket | null;
   hand: string[];
+  /** Cards this player may play right now, as the server sees it; empty otherwise. */
+  legalMoves: string[];
   gameState: GameState | null;
   setHand: (hand: string[]) => void;
   playerId: string;
@@ -93,6 +100,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
   const [players, setPlayers] = useState<Player[]>([]);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [hand, setHand] = useState<string[]>([]);
+  const [legalMoves, setLegalMoves] = useState<string[]>([]);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [playerId, setPlayerId] = useState('');
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
@@ -147,6 +155,17 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     s.on('deal_hand', (cards: string[]) => {
       setHand(cards);
     });
+    // Sent with every hand. It is handled here rather than on the table because the
+    // first one arrives in the same batch as the deal, before the table has mounted.
+    // The server sends one per card played, and it is the empty list for the three
+    // players not on turn, so an unchanged list keeps its identity and renders nothing.
+    s.on('legal_moves', (cards: string[]) => {
+      setLegalMoves(previous =>
+        previous.length === cards.length && previous.every((card, i) => card === cards[i])
+          ? previous
+          : cards
+      );
+    });
     s.on('game_state', (state: GameState) => {
       setGameState(state);
     });
@@ -155,6 +174,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     const clearTable = () => {
       setPlayers([]);
       setHand([]);
+      setLegalMoves([]);
       setGameState(null);
     };
 
@@ -198,6 +218,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
         players,
         socket,
         hand,
+        legalMoves,
         setHand,
         gameState,
         playerId,
