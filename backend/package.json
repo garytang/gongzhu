@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Gongzhu card game backend server",
   "main": "index.js",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "start": "node index.js",
     "test": "mocha test/engine/*.test.js test/selfplay/*.test.js",

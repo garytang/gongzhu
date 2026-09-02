@@ -1,212 +1,155 @@
-# Railway Deployment Guide for Gongzhu (2024)
+# Railway deployment runbook
 
-## Overview
-Railway provides excellent support for monorepo deployments with both frontend and backend services. This document outlines the deployment configuration for the Gongzhu card game application.
+Railway project `gongzhu`, environment `production`, two services off this repo.
 
-## Railway Monorepo Support (2024)
+| Service | Root directory | Public URL |
+|---|---|---|
+| `gongzhu-backend` | `/backend` | https://gongzhu-backend-production.up.railway.app |
+| `gongzhu-frontend` | `/frontend` | https://gongzhu.up.railway.app |
 
-Railway supports two types of monorepos:
-1. **Isolated Monorepos**: Components isolated to their directories (our case: React frontend + Node.js backend)
-2. **Shared Monorepos**: Components sharing code/configuration (Yarn workspaces, Lerna projects)
+**Both services auto-deploy on every merge to `main`.** Game state lives in backend
+memory with no persistence layer, so a merge ends every game in progress.
 
-## Deployment Architecture
+## Operational checklist
 
-### Services Configuration
-- **Frontend Service**: Static React build served from Railway
-- **Backend Service**: Node.js Express server with Socket.IO on Railway
-- **Database**: Not required (game state in memory)
+These need dashboard or CLI write access and cannot be done from a pull request.
 
-### Key Configuration Requirements
+- **`CORS_ORIGIN` must carry the `https://` scheme.** The backend compares it verbatim
+  against the browser's `Origin` header. A bare hostname never matches, which silently
+  rejects the Socket.IO HTTP long-polling transport; WebSocket upgrades are not
+  CORS-gated, so the game still plays for anyone whose network allows WebSockets and
+  fails completely for anyone whose network does not.
+  `railway variables --set "CORS_ORIGIN=https://gongzhu.up.railway.app"` (restarts the
+  backend).
+- **Migrate to Railpack and Infrastructure as Code before 2026-12-01**, when
+  `railway.json` config-as-code stops working. See [Builder migration](#builder-migration).
+- **Decide the fate of the Redis service and its `accomplished-volume`.** Both are
+  provisioned and running; no code in this repo opens a Redis connection. Either delete
+  the service (which is what detaches and removes the volume) or claim it for room state
+  that survives a redeploy. It bills either way.
 
-1. **Root Directory Setting**: 
-   - Frontend service: `/frontend`
-   - Backend service: `/backend`
+## Environment variables
 
-2. **Watch Paths**: Prevent unnecessary rebuilds
-   - Frontend watches: `frontend/**`
-   - Backend watches: `backend/**`
+Backend (`gongzhu-backend`):
 
-3. **Environment Variables**:
-   - Backend: `NODE_ENV=production`, `PORT=8080` (Railway default)
-   - Frontend: `REACT_APP_BACKEND_URL` (points to backend service URL)
+| Variable | Notes |
+|---|---|
+| `NODE_ENV` | `production` |
+| `CORS_ORIGIN` | Frontend origin, scheme included. **Falls back to `*` when unset** — deleting it reopens the backend to every origin rather than failing |
+| `ANTHROPIC_API_KEY` | LLM bot players. The server starts without it and falls back to rule-based bots |
+| `ANTHROPIC_MODEL` | e.g. `claude-3-5-haiku-latest` |
 
-## Configuration Files
+`PORT` is injected by Railway; the server reads it and binds 4000 only in local dev.
+`backend/llm-providers.js` also supports `GOOGLE_API_KEY` and `OPENROUTER_API_KEY`;
+neither is set in production, so those providers are unavailable there.
 
-### Service-Specific railway.json Files
+Frontend (`gongzhu-frontend`):
 
-Each service has its own `railway.json` configuration file:
+| Variable | Notes |
+|---|---|
+| `REACT_APP_BACKEND_URL` | Backend origin. Read at **build time** by react-scripts, so a change needs a redeploy, not a restart. **Falls back to `http://localhost:4000` when unset**, which ships a bundle pointing at the visitor's own machine |
 
-#### Backend Configuration (`backend/railway.json`):
-```json
-{
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "nixpacks"
-  },
-  "deploy": {
-    "startCommand": "npm start",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
-  }
-}
-```
+The frontend service also carries `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`. Nothing
+under `frontend/` reads them and only `REACT_APP_*` names reach the bundle; remove them
+when the key is rotated.
 
-#### Frontend Configuration (`frontend/railway.json`):
-```json
-{
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "nixpacks"
-  },
-  "deploy": {
-    "startCommand": "npx serve -s build -p $PORT",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
-  }
-}
-```
+## Build configuration
 
-**Important Notes:**
-- **No root `railway.json`** - this would force single-service deployment
-- Each service reads its own configuration when Railway sets the root directory
-- Backend uses `npm start` to run the Express server
-- Frontend builds React app and serves static files using `serve`
+Each service is configured by a `railway.json` in its own root directory. There is
+deliberately no root `railway.json` — one would collapse the project into a single
+service.
 
-## Deployment Process
+Node version: both `package.json` files declare `"engines": {"node": "20.x"}`, backed by
+a `.nvmrc` in each directory for local `nvm use`. Nixpacks resolves the runtime from
+`NIXPACKS_NODE_VERSION`, then `engines.node`, then `.nvmrc`, and **defaults to Node 18**
+when none is present. Only a major version is accepted. `react-router-dom` requires
+Node ≥ 20, so the pin is load-bearing for the frontend build.
 
-### Step-by-Step Railway Setup
+## Builder migration
 
-#### Step 1: Create Backend Service
-1. **Go to Railway Dashboard** (https://railway.app)
-2. **Click "New Project"** 
-3. **Select "Deploy from GitHub repo"**
-4. **Choose your repository** (e.g., `username/gongzhu`)
-5. **Service will start building automatically** - it will likely fail initially
-6. **Configure Root Directory:**
-   - Go to **Service Settings** → **Source** (or **Deploy** section)
-   - Find **"Root Directory"** field
-   - Set to: **`/backend`**
-   - Click **Save**
-7. **Enable Public Networking:**
-   - Go to **Service Settings** → **Networking**
-   - Enable **"Public Networking"**
-   - This generates a public URL that browsers can access
-8. **Set Environment Variables** (Settings → Variables):
-   - `NODE_ENV`: `production`
-   - `CORS_ORIGIN`: `*` (update later with frontend URL)
-9. **Redeploy the service**
+Nixpacks is in maintenance mode and is no longer a documented `build.builder` value;
+Railpack succeeds it. Separately, config-as-code is replaced by Infrastructure as Code
+in `.railway/railway.ts`. Both land in one migration.
 
-#### Step 2: Create Frontend Service  
-1. **Click "New Project"** again
-2. **Select "Deploy from GitHub repo"**
-3. **Choose the SAME repository** (`username/gongzhu`)
-4. **Service will start building** - will likely fail initially
-5. **Configure Root Directory:**
-   - Go to **Service Settings** → **Source** (or **Deploy** section)
-   - Find **"Root Directory"** field  
-   - Set to: **`/frontend`**
-   - Click **Save**
-6. **Enable Public Networking:**
-   - Go to **Service Settings** → **Networking**
-   - Enable **"Public Networking"**
-   - This allows users to access your React app in browsers
-7. **Set Environment Variables** (Settings → Variables):
-   - `REACT_APP_BACKEND_URL`: `https://your-backend-service.railway.app`
-8. **Redeploy the service**
+Do this on a branch and merge it deliberately — a merge to `main` deploys immediately.
 
-#### Step 3: Update Cross-References
-Once both services are successfully deployed:
+1. **Delete the `build.builder` key from `frontend/railway.json` and flip the frontend
+   service to Railpack** (Settings → Build → Builder). Config-as-code overrides the
+   dashboard, so the toggle does not survive a deploy while that key is present. Start
+   with the frontend: its failure mode is a static page, not a dead game.
+2. Deploy and verify: `railway logs --build` shows Node 20, and
+   `curl -sSI https://gongzhu.up.railway.app/` returns 200.
+3. Repeat for the backend, verifying with `railway logs -f` and the liveness probe
+   below, then play one full game in a browser.
+4. Move the remaining per-service settings out of `railway.json`. Railpack reads a
+   `railpack.json` in the service root for build steps; start command and restart policy
+   become service settings. The frontend's equivalent:
+   ```json
+   {
+     "steps": { "build": { "commands": ["npm run build"] } },
+     "deploy": { "startCommand": "npx serve -s build -p $PORT" }
+   }
+   ```
+   The backend has no build step — only the `npm start` start command. Neither file needs
+   a `packages.node` entry: Railpack resolves Node from `RAILPACK_NODE_VERSION`, then
+   `devEngines`, then `engines.node`, then `.nvmrc`, so the existing pin already applies.
+5. Generate and review the IaC file before applying:
+   ```bash
+   railway config pull --force   # import current project settings
+   railway config migrate        # preview .railway/railway.ts
+   railway config plan           # confirm the diff touches only these two services
+   railway config migrate --apply
+   ```
+   The plan covers the whole project, Redis included. Read it for unexpected deletions.
+6. Delete both `railway.json` files, clear any custom config file path in service
+   settings, and **rotate `ANTHROPIC_API_KEY`** — Nixpacks passed build variables as
+   Docker build args (`SecretsUsedInArgOrEnv: ANTHROPIC_API_KEY` in the build log), so
+   the current key is written into image layers. Rotating before this step just bakes
+   the new key into new layers.
 
-**Backend Service Environment Variables:**
-- Update `CORS_ORIGIN` to your frontend service URL
-- Example: `https://gongzhu-frontend-abc123.railway.app`
+## CLI
 
-**Frontend Service Environment Variables:**
-- Update `REACT_APP_BACKEND_URL` to your backend service URL  
-- Example: `https://gongzhu-backend-def456.railway.app`
-
-#### Step 4: Final Redeploy
-- Redeploy both services after updating environment variables
-- Test the application by visiting the frontend service URL
-
-### Troubleshooting Common Issues
-
-**"No start command found" Error:**
-- Ensure Root Directory is set correctly (`/backend` or `/frontend`)
-- Check that each directory has its own `package.json` with proper dependencies
-
-**"Cannot find module" Errors:**
-- Verify `backend/package.json` includes: `express`, `socket.io`, `cors`
-- Verify `frontend/package.json` includes: `react`, `react-scripts`, `socket.io-client`
-
-**Build Failures:**
-- Check Railway build logs for specific error messages
-- Ensure dependencies are properly listed in respective `package.json` files
-
-**CORS Errors:**
-- Verify `CORS_ORIGIN` in backend matches frontend service URL exactly
-- Ensure both services are deployed and accessible
-
-### Method 2: Railway CLI
 ```bash
-# Install Railway CLI
-npm install -g @railway/cli
-
-# Login to Railway
+npm i -g @railway/cli
 railway login
+railway link                         # select project gongzhu, environment production, a service
 
-# Initialize project
-railway init
-
-# Deploy
-railway up
+railway status                       # services, URLs, active deployment
+railway variables                    # linked service; --service <name> for the other
+railway logs -f                      # runtime logs, follow
+railway logs --build                 # build log for the active deployment
+railway redeploy                     # redeploy the active deployment
 ```
 
-## Environment Variables Setup
+Deploy by merging to `main`. `railway up` uploads the local working tree instead and
+desynchronises the service from GitHub — avoid it.
 
-### Backend Service
-- `NODE_ENV`: `production`
-- `PORT`: `8080` (Railway default)
-- `CORS_ORIGIN`: `${{RAILWAY_PUBLIC_DOMAIN}}` (frontend domain)
+**Rollback.** `main` is deploying something broken: redeploy the last good deployment
+from the service's Deployments tab (fastest, no build). A `git revert` on `main` also
+works but costs a full rebuild.
 
-### Frontend Service
-- `REACT_APP_BACKEND_URL`: `https://backend-service-name.railway.app`
+## Networking
 
-## Railway Networking Configuration
+Both services need public networking — browsers talk to each of them directly, and
+`*.railway.internal` is not reachable from a browser. WebSockets need no extra
+configuration.
 
-### Public vs Private Networking
+## Troubleshooting
 
-**Both services MUST have Public Networking enabled** for this application:
+**Is the backend actually up?** `curl -sS https://gongzhu-backend-production.up.railway.app/`
+returns `Gongzhu backend is running!`. Neither service sets `healthcheckPath`, so Railway
+marks a deploy healthy as soon as the port binds — an "active" deployment in
+`railway status` is not evidence the app works.
 
-#### Why Backend Needs Public Networking:
-- **Direct WebSocket Connections**: Users' browsers connect directly to the backend for Socket.IO
-- **Real-time Communication**: WebSocket connections bypass the frontend service
-- **API Access**: Frontend JavaScript makes HTTP requests to backend from browsers
+**Page loads but nothing connects.** Either `REACT_APP_BACKEND_URL` was unset or wrong at
+build time (check the bundle's target, not the dashboard value — it is baked in), or
+`CORS_ORIGIN` is rejecting the polling transport on a network that blocks WebSockets.
+Both fail silently with no server-side error.
 
-#### Why Frontend Needs Public Networking:
-- **User Access**: Users need to access the React app in their browsers
-- **Static File Serving**: HTML, CSS, and JavaScript files must be publicly accessible
+**"No start command found".** The service's root directory is not set to `/backend` or
+`/frontend`, so Railway is reading the repo root.
 
-#### Network Flow:
-```
-User's Browser → Frontend Service (public URL) → Loads React App
-User's Browser → Backend Service (public URL) → WebSocket connection for game
-```
-
-### Railway Private Networking
-Private networking (internal Railway URLs) is **not sufficient** because:
-- Private URLs only work between Railway services
-- User browsers cannot access private Railway networks
-- WebSocket connections from browsers require public endpoints
-
-## WebSocket Configuration
-
-Railway fully supports WebSocket connections. No special configuration needed for Socket.IO - it works out of the box with public networking enabled.
-
-## Best Practices
-
-1. **Separate Services**: Deploy frontend and backend as separate Railway services
-2. **Environment Variables**: Use Railway's environment variables for service-to-service communication
-3. **Watch Paths**: Configure watch paths to prevent unnecessary rebuilds
-4. **Health Checks**: Railway automatically monitors service health
-5. **Custom Domains**: Available on all plans including free tier
+**Service offline for a long stretch.** Railway removes deployments that crash-loop, and
+a broken GitHub app link stops auto-deploys with no notification. Compare the active
+deployment SHA in `railway status` against the tip of `main`, and check the GitHub
+connection in service settings.
