@@ -4,6 +4,8 @@ const { createRng } = require('../engine/rng');
 const {
   PIG, SHEEP, TRANSFORMER, isPointCard, isHeart, suitOf, rankValue,
 } = require('../engine/cards');
+const { winningPlay } = require('./card-utils');
+const { cardCounterPolicy } = require('./card-counter');
 
 /**
  * A policy is `(observation, ctx) => card`, choosing from `observation.legalMoves`.
@@ -58,9 +60,7 @@ const avoidPointsPolicy = {
       return moves.slice().sort((a, b) => rankValue(b) - rankValue(a))[0];
     }
 
-    const highestSoFar = obs.trick
-      .filter(t => suitOf(t.card) === ledSuit)
-      .reduce((best, t) => (rankValue(t.card) > rankValue(best.card) ? t : best), obs.trick[0]);
+    const highestSoFar = winningPlay(obs.trick);
     const trickHasSheep = obs.trick.some(t => t.card === SHEEP);
     const trickHasPenalty = obs.trick.some(t => t.card === PIG || isHeart(t.card));
     const isLastToPlay = obs.trick.length === 3;
@@ -86,7 +86,25 @@ const POLICIES = {
   random: randomPolicy,
   lowest: () => lowestPolicy,
   avoidPoints: () => avoidPointsPolicy,
+  cardCounter: cardCounterPolicy,
 };
+
+/**
+ * Register a policy from outside this file, so a policy that lives elsewhere in the
+ * codebase (an LLM bot, a trained model) becomes usable by name from the CLI, the
+ * batch runner and the tournament without editing the harness.
+ *
+ * `factory(name)` must return `{ name, choose(observation, ctx) }`. `choose` may return
+ * a card or a promise of one, and must pick from `observation.legalMoves`. A factory is
+ * called once per seat per match, so it is the right place to allocate per-match state.
+ */
+function registerPolicy(name, factory) {
+  if (typeof factory !== 'function') {
+    throw new Error(`registerPolicy("${name}") needs a factory function`);
+  }
+  POLICIES[name] = factory;
+  return factory;
+}
 
 function makePolicy(name, seedSuffix = '') {
   const factory = POLICIES[name];
@@ -96,4 +114,11 @@ function makePolicy(name, seedSuffix = '') {
   return factory(`${name}${seedSuffix}`);
 }
 
-module.exports = { POLICIES, makePolicy, randomPolicy, lowestPolicy, avoidPointsPolicy };
+module.exports = {
+  POLICIES,
+  registerPolicy,
+  makePolicy,
+  randomPolicy,
+  lowestPolicy,
+  avoidPointsPolicy,
+};

@@ -11,7 +11,8 @@
     "test:integration": "mocha test/socket-integration.test.js",
     "test:llm": "mocha test/llm-bot.test.js",
     "test:all": "mocha --recursive \"test/**/*.test.js\"",
-    "selfplay": "node src/selfplay/cli.js"
+    "selfplay": "node src/selfplay/cli.js",
+    "tournament": "node src/selfplay/cli.js tournament"
   },
   "dependencies": {
     "axios": "^1.10.0",
