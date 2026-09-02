@@ -18,6 +18,20 @@ const DEFAULT_MODELS = {
   openrouter: 'anthropic/claude-haiku-4.5',
 };
 
+/** Environment variable holding each provider's API key, in auto-detection order. */
+const PROVIDER_KEYS = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  google: 'GOOGLE_API_KEY',
+};
+
+/** How a bot on each provider introduces itself. Only Anthropic's own API is certain to be Claude. */
+const DISPLAY_NAMES = {
+  anthropic: 'Claude',
+  openrouter: 'AI',
+  google: 'Gemini',
+};
+
 const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_MAX_TOKENS = 300;
 
@@ -151,6 +165,8 @@ function createLLMProvider(type, config = {}) {
 
 module.exports = {
   DEFAULT_MODELS,
+  PROVIDER_KEYS,
+  DISPLAY_NAMES,
   AnthropicProvider,
   GoogleProvider,
   OpenRouterProvider,

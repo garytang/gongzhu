@@ -66,7 +66,7 @@ async function table(playerCount, options = {}) {
   const instance = createGongzhuServer({
     botDelayMs: 0,
     trickDelayMs: 5,
-    useLLMBots: false,
+    llmProvider: null,
     log: quiet,
     ...options,
   });

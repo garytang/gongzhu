@@ -1,4 +1,5 @@
 const { createLLMPolicy } = require('./src/bots/llm-policy');
+const { DISPLAY_NAMES } = require('./src/bots/providers');
 const { toObservation, namesFromGameState, legalMovesFor } = require('./src/bots/observation');
 
 /**
@@ -11,7 +12,8 @@ const { toObservation, namesFromGameState, legalMovesFor } = require('./src/bots
 class LLMBotPlayer {
   constructor(id, llmConfig = {}) {
     this.id = id;
-    this.handle = llmConfig.handle || `AI ${id.slice(-4)}`;
+    const provider = llmConfig.provider || 'anthropic';
+    this.handle = llmConfig.handle || `${DISPLAY_NAMES[provider] || 'AI'} Bot ${id.slice(-4)}`;
     this.socketId = `llm_bot_${id}`;
 
     this.policy = createLLMPolicy({

@@ -35,13 +35,14 @@ Backend (`gongzhu-backend`):
 | Variable | Notes |
 |---|---|
 | `NODE_ENV` | `production` |
-| `CORS_ORIGIN` | Frontend origin, scheme included. **Falls back to `*` when unset** — deleting it reopens the backend to every origin rather than failing |
-| `ANTHROPIC_API_KEY` | LLM bot players. The server starts without it and falls back to rule-based bots |
-| `ANTHROPIC_MODEL` | e.g. `claude-3-5-haiku-latest` |
+| `CORS_ORIGIN` | Comma-separated allowed origins. A bare hostname gets `https://` prepended. **Unset is fatal in production** (the server refuses to start rather than silently allowing every origin) |
+| `LLM_PROVIDER` | `anthropic`, `openrouter` or `google`. Unset: the first of those with a key present. Set it when more than one key exists |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Anthropic API directly. Default model `claude-haiku-4-5` |
+| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | OpenRouter. Default model `anthropic/claude-haiku-4.5`; any OpenRouter model id works |
+| `GOOGLE_API_KEY`, `GOOGLE_MODEL` | Google Gemini. Default model `gemini-3.5-flash-lite` |
 
+With no provider key at all the server starts and fills seats with rule-based bots.
 `PORT` is injected by Railway; the server reads it and binds 4000 only in local dev.
-`backend/llm-providers.js` also supports `GOOGLE_API_KEY` and `OPENROUTER_API_KEY`;
-neither is set in production, so those providers are unavailable there.
 
 Frontend (`gongzhu-frontend`):
 
