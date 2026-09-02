@@ -38,18 +38,7 @@ function createBotRegistry(log = console) {
     return entry;
   }
 
-  const describe = entry => ({
-    id: entry.socketId,
-    handle: entry.handle,
-    type: entry.kind,
-    ...(entry.kind === 'llm'
-      ? { provider: entry.provider, model: entry.model }
-      : { difficulty: entry.difficulty }),
-  });
-
   return {
-    describe,
-
     /** A rule-based bot. `difficulty` only selects which policy plays the cards. */
     createBot(difficulty = 'easy') {
       const id = `bot_${Date.now()}_${counter++}`;
@@ -87,7 +76,6 @@ function createBotRegistry(log = console) {
     has: socketId => seated.has(socketId),
     get: socketId => seated.get(socketId),
     ids: () => [...seated.keys()],
-    list: () => [...seated.values()].map(describe),
     removeAll() {
       const removed = [...seated.keys()];
       seated.clear();

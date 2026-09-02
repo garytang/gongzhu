@@ -53,8 +53,8 @@ LLM_REASONING_EFFORT=low   # OpenRouter only: none | low | medium | high
 LLM_BOT_DEBUG=1            # log each prompt, raw response and parsed reasoning
 ```
 
-The live server fills empty seats from `LLM_PROVIDER`; the `/api/bots/create` endpoint
-can name any provider per bot regardless.
+The live server fills a room's empty seats from `LLM_PROVIDER` when the host starts a
+hand. That is the only way a bot reaches a table: there is no bot API.
 
 Keys: [Anthropic Console](https://console.anthropic.com/),
 [Google AI Studio](https://aistudio.google.com/apikey),
@@ -96,17 +96,14 @@ const card = await policy.choose(engine.observation(match, playerId));
 
 `choose` is **async**, unlike the synchronous heuristic policies. A runner must `await` it.
 
-## HTTP API
+## No HTTP API
 
-```bash
-POST /api/bots/create   {"type":"llm","llmConfig":{"handle":"Claude Bot","provider":"anthropic"}}
-GET  /api/bots/list
-DELETE /api/bots/clear
-```
-
-`/api/bots/list` reports the resolved provider and model per bot. `llmConfig` accepts
-`handle`, `provider`, `model`, `apiKey` and `timeoutMs`. The old `fallbackDifficulty` key
-is accepted and ignored — the fallback is a policy now, not a difficulty tier.
+`POST /api/bots/create`, `GET /api/bots/list` and `DELETE /api/bots/clear` were removed
+with the move to rooms. They were unauthenticated on a public URL, and once bots belong
+to a room, an unauthenticated endpoint means a stranger can seat bots at someone else's
+table. Bots are created by `start_game`, which only a room's host may send, and they are
+scoped to that room. `llmConfig` still accepts `handle`, `provider`, `model`, `apiKey`
+and `timeoutMs` when building an `LLMBotPlayer` directly.
 
 ## Testing
 
