@@ -50,3 +50,14 @@ export function displayTeamScores(state: GameState): TeamScores {
     team2: state.cumulativeTeamScores?.team2 ?? round.team2,
   };
 }
+
+/**
+ * Both sides of a team-keyed payload, in team order, so a caller can render them in
+ * a loop rather than branching on team1 against team2.
+ */
+export function teamPairs<T>(pair: { team1: T; team2: T }): [1 | 2, T][] {
+  return [
+    [1, pair.team1],
+    [2, pair.team2],
+  ];
+}

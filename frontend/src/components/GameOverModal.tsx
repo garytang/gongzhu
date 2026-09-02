@@ -1,6 +1,7 @@
 import React, { ReactNode } from 'react';
 import type { GameState } from '../PlayerContext';
 import { cardColor, pointCards } from '../lib/cards';
+import { teamPairs } from '../lib/scores';
 import { modalCard, overlay, button, primaryButton } from './styles';
 
 export interface GameOverData {
@@ -41,8 +42,7 @@ function TeamResults({ teamInfo, winningTeam }: {
 }) {
   return (
     <div style={{ marginBottom: 20 }}>
-      {([1, 2] as const).map(team => {
-        const info = team === 1 ? teamInfo.team1 : teamInfo.team2;
+      {teamPairs(teamInfo).map(([team, info]) => {
         const won = winningTeam === team;
         return (
           <ResultRow key={team} won={won}>

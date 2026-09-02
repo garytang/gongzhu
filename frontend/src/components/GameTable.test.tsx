@@ -27,7 +27,22 @@ function gameState(overrides: Partial<GameState> = {}): GameState {
   };
 }
 
-function renderTable(state: GameState, hand: string[] = []) {
+function teamGameOver(roundScore: number, cumulativeScore: number) {
+  return {
+    scores: { me: 0, p1: 0, p2: 0, p3: 0 },
+    collected: {},
+    teamInfo: {
+      team1: { players: ['Me', 'Cat'], roundScore, cumulativeScore },
+      team2: { players: ['Bob', 'Dan'], roundScore: -200, cumulativeScore: -200 },
+    },
+  };
+}
+
+/**
+ * The server sends `legal_moves` with every `deal_hand`, so a test that wants a
+ * playable hand has to send both. Legal moves default to the whole hand.
+ */
+function renderTable(state: GameState, hand: string[] = [], legalMoves: string[] = hand) {
   render(
     <PlayerProvider>
       <GameTable />
@@ -36,6 +51,7 @@ function renderTable(state: GameState, hand: string[] = []) {
   act(() => mockSocketInstance.fire('connect'));
   act(() => {
     mockSocketInstance.fire('deal_hand', hand);
+    mockSocketInstance.fire('legal_moves', legalMoves);
     mockSocketInstance.fire('game_state', state);
   });
 }
@@ -86,11 +102,13 @@ describe('GameTable', () => {
   });
 
   it('names the suit to follow on the player\'s turn', () => {
-    renderTable(gameState({ turn: 1, trick: [{ player: 'me', card: '2♣' }] }));
-    act(() =>
-      mockSocketInstance.fire('game_state', gameState({ turn: 0, trick: [{ player: 'p1', card: '5♥' }] }))
-    );
+    renderTable(gameState({ turn: 0, trick: [{ player: 'p1', card: '5♥' }] }), ['9♥', '2♣'], ['9♥']);
     expect(screen.getByText(/follow ♥/)).toBeInTheDocument();
+  });
+
+  it('says the suit cannot be followed when no legal move is of it', () => {
+    renderTable(gameState({ turn: 0, trick: [{ player: 'p1', card: '5♥' }] }), ['A♠', '2♣']);
+    expect(screen.getByText(/no ♥ left, play anything/)).toBeInTheDocument();
   });
 
   it('emits the clicked card when it is the player\'s turn', async () => {
@@ -99,39 +117,94 @@ describe('GameTable', () => {
     expect(mockSocketInstance.emit).toHaveBeenCalledWith('play_card', '2♣');
   });
 
-  it('announces the trick winner when the server clears a full trick', () => {
+  it('offers only the legal moves the server sent', async () => {
+    renderTable(gameState({ turn: 0, trick: [{ player: 'p1', card: '5♥' }] }), ['2♣', '9♥'], ['9♥']);
+
+    expect(screen.getByRole('button', { name: '9♥' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '2♣' })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole('button', { name: '2♣' }));
+    expect(mockSocketInstance.emit).not.toHaveBeenCalledWith('play_card', '2♣');
+  });
+
+  it('announces the winner of a trick the server is holding on screen', () => {
+    renderTable(gameState());
+    expect(screen.queryByText(/won the trick/)).not.toBeInTheDocument();
+
     const completed = [
       { player: 'me', card: '5♥' },
       { player: 'p1', card: 'K♥' },
       { player: 'p2', card: '2♥' },
       { player: 'p3', card: 'A♠' },
     ];
-    renderTable(gameState({ trick: completed, turn: 1 }));
-    expect(screen.queryByText(/won the trick/)).not.toBeInTheDocument();
-
-    act(() => mockSocketInstance.fire('game_state', gameState({ trick: [], turn: 1 })));
+    act(() =>
+      mockSocketInstance.fire(
+        'game_state',
+        gameState({ trick: completed, turn: 1, lastTrick: { trick: completed, winner: 'p1' } })
+      )
+    );
     expect(screen.getByText('Bob won the trick')).toBeInTheDocument();
+
+    // The message outlives the trick the server then clears.
+    act(() =>
+      mockSocketInstance.fire('game_state', gameState({ trick: [], turn: 1, lastTrick: { trick: completed, winner: 'p1' } }))
+    );
+    expect(screen.getByText('Bob won the trick')).toBeInTheDocument();
+  });
+
+  it('seats the player at the bottom with their teammate across the table', () => {
+    renderTable(gameState());
+    expect(screen.getByTestId('seat-bottom')).toHaveTextContent('Me');
+    expect(screen.getByTestId('seat-top')).toHaveTextContent('Cat');
+    expect(screen.getByTestId('seat-left')).toHaveTextContent('Bob');
+    expect(screen.getByTestId('seat-right')).toHaveTextContent('Dan');
   });
 
   it('marks the seats the room filled with bots', () => {
     renderTable(gameState());
-    expect(within(screen.getByRole('button', { name: /Dan/ })).queryByText('🤖')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('seat-right')).queryByText('🤖')).not.toBeInTheDocument();
 
     // Which seats are bots comes from the room's player list, not the game state.
     act(() =>
       mockSocketInstance.fire('player_list', [...seats.slice(0, 3), { ...seats[3], isBot: true }])
     );
-    expect(within(screen.getByRole('button', { name: /Dan/ })).getByText('🤖')).toBeInTheDocument();
+    expect(within(screen.getByTestId('seat-right')).getByText('🤖')).toBeInTheDocument();
   });
 
   it('shows a player\'s collected point cards on demand', async () => {
     renderTable(gameState());
     act(() => mockSocketInstance.fire('collected', { p1: ['Q♠', '3♠', '2♥'] }));
-    await userEvent.click(screen.getByRole('button', { name: /Bob/ }));
+    await userEvent.click(screen.getByTestId('seat-left'));
 
     const dialog = screen.getByText(/Bob's Collected Point Cards/).parentElement as HTMLElement;
     expect(within(dialog).getByText('Q♠')).toBeInTheDocument();
     expect(within(dialog).getByText('2♥')).toBeInTheDocument();
     expect(within(dialog).queryByText('3♠')).not.toBeInTheDocument();
+  });
+
+  it('accumulates a round history across the hands of a match', async () => {
+    renderTable(gameState());
+    expect(screen.queryByRole('button', { name: /round history/i })).not.toBeInTheDocument();
+
+    act(() => mockSocketInstance.fire('game_over', teamGameOver(-100, -100)));
+    act(() => mockSocketInstance.fire('game_over', teamGameOver(200, 100)));
+
+    await userEvent.click(screen.getByRole('button', { name: /round history \(2\)/i }));
+    const rows = within(screen.getByTestId('round-history')).getAllByRole('row');
+    expect(rows[1]).toHaveTextContent('+200 (100)');
+    expect(rows[2]).toHaveTextContent('-100 (-100)');
+  });
+
+  it('drops the round history when a new match starts', () => {
+    renderTable(gameState());
+    act(() => mockSocketInstance.fire('game_over', teamGameOver(-100, -100)));
+    expect(screen.getByRole('button', { name: /round history \(1\)/i })).toBeInTheDocument();
+
+    // A match with no completed hands: every total is back to zero.
+    act(() => {
+      mockSocketInstance.fire('game_started');
+      mockSocketInstance.fire('game_state', gameState({ scores: { me: 0, p1: 0, p2: 0, p3: 0 } }));
+    });
+    expect(screen.queryByRole('button', { name: /round history/i })).not.toBeInTheDocument();
   });
 });

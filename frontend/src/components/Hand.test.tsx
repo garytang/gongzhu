@@ -5,7 +5,9 @@ import Hand from './Hand';
 
 function renderHand(cards: string[], props: Partial<React.ComponentProps<typeof Hand>> = {}) {
   const onPlay = jest.fn();
-  render(<Hand cards={cards} playable playedCard={null} onPlay={onPlay} {...props} />);
+  render(
+    <Hand cards={cards} playable legalMoves={cards} playedCard={null} onPlay={onPlay} {...props} />
+  );
   return { onPlay };
 }
 
@@ -32,5 +34,24 @@ describe('Hand', () => {
     expect(screen.getByRole('button', { name: '2♠' })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: '2♠' }));
     expect(onPlay).not.toHaveBeenCalled();
+  });
+
+  it('offers only the cards the server called legal', () => {
+    renderHand(['2♠', '3♠', '4♥'], { legalMoves: ['2♠', '3♠'] });
+    expect(screen.getByRole('button', { name: '2♠' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '3♠' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '4♥' })).toBeDisabled();
+  });
+
+  it('will not play a card the server did not call legal', async () => {
+    const { onPlay } = renderHand(['2♠', '4♥'], { legalMoves: ['2♠'] });
+    await userEvent.click(screen.getByRole('button', { name: '4♥' }));
+    expect(onPlay).not.toHaveBeenCalled();
+  });
+
+  it('offers nothing while the server holds a finished trick on screen', () => {
+    renderHand(['2♠', '4♥'], { legalMoves: [] });
+    expect(screen.getByRole('button', { name: '2♠' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '4♥' })).toBeDisabled();
   });
 });
