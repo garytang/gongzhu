@@ -11,12 +11,23 @@ const rooms = require('../src/server/rooms');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const quiet = { log() {}, warn() {}, error() {} };
 
-/** Registers a handle, which is the identity step every room action requires. */
-function connect(url, handle) {
+let nextPlayerId = 0;
+/** What a browser mints once and keeps in localStorage. */
+const newPlayerId = () => `player-id-${nextPlayerId++}-${Date.now()}`;
+
+/**
+ * Registers a handle, which is the identity step every room action requires. Reusing a
+ * `playerId` is what a returning browser does; the client is decorated with the id the
+ * server confirmed, so a test can address the player rather than the connection.
+ */
+function connect(url, handle, playerId = newPlayerId()) {
   const client = new Client(url, { transports: ['websocket'] });
   return new Promise((resolve) => {
-    client.once('handle_registered', () => resolve(client));
-    client.on('connect', () => client.emit('register_handle', { handle }));
+    client.once('handle_registered', (player) => {
+      client.playerId = player.playerId;
+      resolve(client);
+    });
+    client.on('connect', () => client.emit('register_handle', { handle, playerId }));
   });
 }
 
@@ -73,9 +84,13 @@ async function serve(options = {}) {
   return instance;
 }
 
-/** A connected, registered client, put into `code` — or into a room it creates. */
-async function member(instance, handle, code) {
-  const client = await connect(instance.url, handle);
+/**
+ * A connected, registered client, put into `code` — or into a room it creates. Passing
+ * `playerId` is how a test returns as an existing player rather than arriving as a new
+ * one, which is what a browser does after a refresh.
+ */
+async function member(instance, handle, code, playerId) {
+  const client = await connect(instance.url, handle, playerId);
   instance.clients.push(client);
   // `room_joined` is answered to the caller before the room is broadcast, so wait for
   // the broadcast too: a caller that starts listening on `room_joined` alone would
@@ -88,7 +103,7 @@ async function member(instance, handle, code) {
   if (code) client.emit('join_room', { code });
   else client.emit('create_room', { name: `${handle}'s table` });
   const [joined] = await settled;
-  return { client, ...joined };
+  return { client, playerId: client.playerId, ...joined };
 }
 
 /** One room hosted by the first of `playerCount` clients; the rest join by code. */
@@ -421,7 +436,7 @@ describe('rooms', function () {
     const left = waitFor(guest.client, 'room_left');
     const listed = waitFor(guest.client, 'room_list');
     const seatFreed = waitFor(host.client, 'room_state', r => r.seats.length === 1);
-    host.client.emit('kick', { playerId: guest.client.id });
+    host.client.emit('kick', { playerId: guest.playerId });
 
     assert.match((await told).reason, /removed you/);
     await left;
@@ -513,6 +528,175 @@ describe('rooms', function () {
   });
 });
 
+describe('identity and reconnect', function () {
+  this.timeout(20000);
+  let instance;
+
+  afterEach(async () => {
+    if (!instance) return;
+    for (const client of instance.clients) client.close();
+    await instance.close();
+    instance = null;
+  });
+
+  /** The event that says a player is the one the table is waiting on. */
+  const myTurn = client => waitFor(client, 'legal_moves', moves => moves.length > 0);
+
+  /**
+   * A two-human table stopped in the middle of a hand with `Bob` on turn: `Ann` and the
+   * two bots keep playing, so nothing moves until Bob does.
+   */
+  async function stalledOnBob(options) {
+    instance = await serve(options);
+    const ann = await member(instance, 'Ann');
+    const bob = await member(instance, 'Bob', ann.code);
+    autoplay([ann.client]);
+    const turn = myTurn(bob.client);
+    ann.client.emit('start_game');
+    await turn;
+    return { ann, bob };
+  }
+
+  it('holds the seat and the host role for a lone player who refreshes', async () => {
+    instance = await serve();
+    const first = await member(instance, 'Ann');
+    first.client.close();
+    await sleep(30);
+
+    const back = await member(instance, 'Ann', first.code, first.playerId);
+    assert.strictEqual(back.playerId, first.playerId);
+    assert.strictEqual(back.role, 'seat');
+    const room = instance.getRoom(first.code);
+    assert.deepStrictEqual(room.seats, [first.playerId]);
+    assert.strictEqual(room.hostId, first.playerId);
+  });
+
+  it('deals to every tab a player has open, and one closing is not leaving', async () => {
+    instance = await serve();
+    const ann = await member(instance, 'Ann');
+
+    const secondTab = await connect(instance.url, 'Ann', ann.playerId);
+    instance.clients.push(secondTab);
+    const joined = waitFor(secondTab, 'room_joined');
+    secondTab.emit('join_room', { code: ann.code });
+    assert.deepStrictEqual(await joined, { code: ann.code, role: 'seat' });
+
+    const dealt = [waitFor(ann.client, 'deal_hand'), waitFor(secondTab, 'deal_hand')];
+    ann.client.emit('start_game');
+    const [first, second] = await Promise.all(dealt);
+    assert.deepStrictEqual(first, second);
+
+    secondTab.close();
+    await sleep(50);
+    assert.deepStrictEqual(instance.getRoom(ann.code).seats, [ann.playerId]);
+  });
+
+  it('waits out a mid-hand drop and hands the cards back to the same player', async () => {
+    const { ann, bob } = await stalledOnBob({ reconnectGraceMs: 5000 });
+
+    const dropped = waitFor(ann.client, 'player_disconnected');
+    const counting = waitFor(ann.client, 'room_state', r => r.absent.length === 1);
+    bob.client.close();
+    const notice = await dropped;
+    assert.strictEqual(notice.playerId, bob.playerId);
+    assert.strictEqual(notice.handle, 'Bob');
+    assert.ok(notice.deadline > Date.now(), 'the countdown had already expired');
+    assert.strictEqual((await counting).absent[0].playerId, bob.playerId);
+
+    // Nobody plays for Bob: the table is exactly where he left it.
+    const room = instance.getRoom(ann.code);
+    const before = room.session.match.hand.trick.length;
+    await sleep(100);
+    assert.strictEqual(room.session.match.hand.trick.length, before);
+
+    // Registering is the whole reconnect: the server puts the socket back in the room,
+    // so a client never has to arrange it. Legal moves come with the hand, because the
+    // table disables every card that is not in them.
+    const reconnected = waitFor(ann.client, 'player_reconnected');
+    const returning = new Client(instance.url, { transports: ['websocket'] });
+    instance.clients.push(returning);
+    const dealt = waitFor(returning, 'deal_hand');
+    const moves = myTurn(returning);
+    const state = waitFor(returning, 'game_state');
+    const collected = waitFor(returning, 'collected');
+    returning.on('connect', () =>
+      returning.emit('register_handle', { handle: 'Bob', playerId: bob.playerId }));
+
+    assert.strictEqual((await reconnected).playerId, bob.playerId);
+    const hand = await dealt;
+    const legal = await moves;
+    assert.ok(legal.every(card => hand.includes(card)));
+    assert.strictEqual((await state).playerHandles.length, 4);
+    await collected;
+
+    // And play resumes from the new socket.
+    const played = waitFor(returning, 'deal_hand', cards => cards.length === hand.length - 1);
+    returning.emit('play_card', legal[0]);
+    await played;
+    assert.strictEqual(instance.getRoom(ann.code).session.room.absent.size, 0);
+  });
+
+  it('gives the seat to a bot when the countdown runs out, and the player a spectator seat', async () => {
+    const { ann, bob } = await stalledOnBob({ reconnectGraceMs: 60 });
+
+    const taken = waitFor(ann.client, 'seat_taken_by_bot');
+    const over = waitFor(ann.client, 'game_over');
+    bob.client.close();
+
+    const seat = await taken;
+    assert.strictEqual(seat.playerId, bob.playerId);
+    assert.strictEqual(seat.handle, 'Bob');
+    assert.ok(seat.bot, 'no bot was named');
+    // The bot really plays the seat: the hand runs to the end with Ann and three bots.
+    assert.strictEqual(Object.keys((await over).scores).length, 4);
+
+    const back = await member(instance, 'Bob', ann.code, bob.playerId);
+    assert.strictEqual(back.role, 'spectator');
+    assert.ok(!instance.getRoom(ann.code).seats.includes(bob.playerId));
+  });
+
+  it('ends the hand instead, when the room asks for that', async () => {
+    instance = await serve({ reconnectGraceMs: 60 });
+    const ann = await member(instance, 'Ann');
+    const bob = await member(instance, 'Bob', ann.code);
+    const set = waitFor(ann.client, 'room_state', r => r.options.onDisconnect === 'lobby');
+    ann.client.emit('update_room_options', { onDisconnect: 'lobby' });
+    await set;
+
+    autoplay([ann.client]);
+    const turn = myTurn(bob.client);
+    ann.client.emit('start_game');
+    await turn;
+
+    const abandoned = waitFor(ann.client, 'hand_abandoned');
+    const waiting = waitFor(ann.client, 'room_state', r => r.phase === 'waiting');
+    bob.client.close();
+
+    assert.strictEqual((await abandoned).playerId, bob.playerId);
+    await waiting;
+    assert.strictEqual(instance.getRoom(ann.code).session, null);
+    assert.strictEqual(instance.getRoom(ann.code).bots.ids().length, 0);
+  });
+
+  it('frees the seat straight away when the drop happens before the deal', async () => {
+    instance = await serve({ reconnectGraceMs: 5000 });
+    const ann = await member(instance, 'Ann');
+    const bob = await member(instance, 'Bob', ann.code);
+
+    const freed = waitFor(ann.client, 'room_state', r => r.seats.length === 1);
+    bob.client.close();
+    const state = await freed;
+    assert.deepStrictEqual(state.absent, []);
+  });
+
+  it('ignores an id that is not the shape a client mints', async () => {
+    instance = await serve();
+    const client = await connect(instance.url, 'Ann', 'no');
+    instance.clients.push(client);
+    assert.strictEqual(client.playerId, client.id);
+  });
+});
+
 describe('room model', () => {
   it('never puts an ambiguous character in a join code', () => {
     for (const character of rooms.CODE_ALPHABET) assert.ok(!'01OI'.includes(character));
@@ -529,12 +713,18 @@ describe('room model', () => {
     assert.throws(() => rooms.normalizeRoomOptions({ teams: 'yes' }), rooms.RoomError);
     assert.throws(() => rooms.normalizeRoomOptions({ targetScore: 0 }), rooms.RoomError);
     assert.throws(() => rooms.normalizeRoomOptions({ visibility: 'unlisted' }), rooms.RoomError);
+    assert.throws(() => rooms.normalizeRoomOptions({ onDisconnect: 'pause' }), rooms.RoomError);
   });
 
   it('keeps the options it was given and ignores keys it does not know', () => {
     const options = rooms.normalizeRoomOptions({ teams: false, targetScore: 500, nonsense: 1 });
-    assert.deepStrictEqual(options,
-      { variant: 'standard', teams: false, targetScore: 500, visibility: 'public' });
+    assert.deepStrictEqual(options, {
+      variant: 'standard',
+      teams: false,
+      targetScore: 500,
+      visibility: 'public',
+      onDisconnect: 'bot',
+    });
   });
 
   it('spectates the fifth arrival and seats them when a seat frees', () => {
@@ -553,8 +743,18 @@ describe('room model', () => {
     rooms.release(room, 'a');
     assert.strictEqual(room.hostId, 'b');
     rooms.release(room, 'b');
-    assert.strictEqual(room.hostId, null);
     assert.deepStrictEqual(rooms.members(room), []);
+    // An empty room remembers who hosted it, so a refresh gets the room back.
+    assert.strictEqual(room.hostId, 'b');
+    assert.strictEqual(rooms.admit(room, 'b'), 'seat');
+    assert.strictEqual(room.hostId, 'b');
+  });
+
+  it('lets a stranger host a room its owner abandoned, rather than stranding it', () => {
+    const room = rooms.createRoom({ code: 'ABCDEF', name: 'T', hostId: 'a', options: rooms.DEFAULT_ROOM_OPTIONS });
+    rooms.release(room, 'a');
+    rooms.admit(room, 'z');
+    assert.strictEqual(room.hostId, 'z');
   });
 });
 

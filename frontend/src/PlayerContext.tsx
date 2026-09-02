@@ -1,5 +1,6 @@
-import React, { createContext, useCallback, useContext, useState, ReactNode, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useRef, useState, ReactNode, useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { loadHandle, loadPlayerId, saveHandle } from './lib/identity';
 
 // Define Player type
 export interface Player {
@@ -35,6 +36,14 @@ export interface RoomOptions {
   teams: boolean;
   targetScore: number;
   visibility: 'public' | 'private';
+  /** What becomes of a seat whose player never returns: a bot plays it, or the hand ends. */
+  onDisconnect: 'bot' | 'lobby';
+}
+
+/** A seated player who has dropped, and the moment their seat stops being theirs. */
+export interface AbsentPlayer extends Player {
+  /** Epoch milliseconds, as the server sees the clock. */
+  deadline: number;
 }
 
 /** The room the player is in, as the server describes it. */
@@ -47,6 +56,7 @@ export interface RoomState {
   spectators: Player[];
   capacity: number;
   phase: RoomPhase;
+  absent: AbsentPlayer[];
 }
 
 /** One row of the lobby's public room list. */
@@ -96,18 +106,31 @@ export const usePlayer = () => {
 
 
 export const PlayerProvider = ({ children }: { children: ReactNode }) => {
-  const [handle, setHandle] = useState('');
+  const [handle, setHandleState] = useState(loadHandle);
   const [players, setPlayers] = useState<Player[]>([]);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [hand, setHand] = useState<string[]>([]);
   const [legalMoves, setLegalMoves] = useState<string[]>([]);
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [playerId, setPlayerId] = useState('');
+  // The id claimed on every registration: minted once and kept in localStorage, so a
+  // refresh or a dropped connection returns to the seat the server is holding.
+  const [claimedId] = useState(loadPlayerId);
+  // What the server confirmed it keys this player by, which is the claimed id unless the
+  // server refused it and fell back to the socket id.
+  const [playerId, setPlayerId] = useState(claimedId);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [room, setRoom] = useState<RoomState | null>(null);
   const [roomList, setRoomList] = useState<RoomListing[]>([]);
   const [roomError, setRoomError] = useState<string | null>(null);
   const [registeredHandle, setRegisteredHandle] = useState<string | null>(null);
+  // Read from inside the socket's own listeners, which are installed once and would
+  // otherwise close over the room this had at mount.
+  const roomRef = useRef<RoomState | null>(null);
+
+  const setHandle = useCallback((next: string) => {
+    saveHandle(next);
+    setHandleState(next);
+  }, []);
 
   useEffect(() => {
     const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:4000';
@@ -120,7 +143,6 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     setSocket(s);
 
     s.on('connect', () => {
-      setPlayerId(s.id || '');
       setConnectionStatus('connected');
     });
 
@@ -135,10 +157,10 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
 
     // The server's acknowledgement of `register_handle`. Room actions are refused until
     // it arrives, and a component's effect can fire before the provider's, so screens
-    // wait for this rather than for the handle being set locally.
+    // wait for this rather than for the handle being set locally. It also puts a
+    // reconnecting socket back into the room its player still holds, so nothing here
+    // has to ask for that.
     s.on('handle_registered', (player: Player) => {
-      // The server decides what a seat is keyed by; take its answer rather than
-      // assuming the socket id, so WS-06's persistent ids need no client change.
       setPlayerId(player.playerId);
       setRegisteredHandle(player.handle);
     });
@@ -178,15 +200,19 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
       setGameState(null);
     };
 
-    // The table the room screen and the game table both read.
-    s.on('room_joined', () => {
+    // The table the room screen and the game table both read. Rejoining the room you are
+    // already in — which is what a reconnecting socket does — must not blank the table,
+    // or every drop would flash "waiting for game state" over a hand still in progress.
+    s.on('room_joined', ({ code }: { code: string }) => {
       setRoomError(null);
-      clearTable();
+      if (code !== roomRef.current?.code) clearTable();
     });
     s.on('room_state', (state: RoomState) => {
+      roomRef.current = state;
       setRoom(state);
     });
     s.on('room_left', () => {
+      roomRef.current = null;
       setRoom(null);
       clearTable();
     });
@@ -200,13 +226,21 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     return () => {
       s.disconnect();
     };
-  }, []);
+    // `claimedId` is minted once and never changes, so the socket is still built once.
+  }, [claimedId]);
 
+  /**
+   * The one place a handle is registered: when it is first chosen, when it changes, and
+   * again after a drop, because Socket.IO reconnects on the same socket object and the
+   * server needs the identity re-established on the new connection. `claimedId` never
+   * changes and the server's answer is not a dependency, so this fires exactly once per
+   * connection rather than a second time on the acknowledgement.
+   */
   useEffect(() => {
-    if (socket && handle) {
-      socket.emit('register_handle', { handle, playerId });
+    if (socket && handle && connectionStatus === 'connected') {
+      socket.emit('register_handle', { handle, playerId: claimedId });
     }
-  }, [socket, handle, playerId]);
+  }, [socket, handle, claimedId, connectionStatus]);
 
   const dismissRoomError = useCallback(() => setRoomError(null), []);
 

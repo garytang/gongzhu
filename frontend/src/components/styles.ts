@@ -35,6 +35,18 @@ export const modalCard: CSSProperties = {
   boxSizing: 'border-box',
 };
 
+/**
+ * The "the game is waiting on something outside your control" strip — a dropped socket,
+ * a player who has not come back yet. Orange for a wait, red for a hard failure.
+ */
+export const banner: CSSProperties = {
+  padding: '8px 12px',
+  textAlign: 'center',
+  fontWeight: 600,
+  color: '#fff',
+  background: '#ef6c00',
+};
+
 export const button: CSSProperties = {
   padding: '8px 16px',
   borderRadius: 6,

@@ -27,9 +27,9 @@ This is a Gongzhu (Chinese trick-taking card game) web application with real-tim
 app and the Socket.IO server and returns them without listening, so tests drive the real
 server on an ephemeral port. It holds no rules of its own — legality, trick resolution
 and scoring all come from the engine. Delays (`botDelayMs`, `trickDelayMs`,
-`emptyRoomTtlMs`) are options so tests need not wait for them. `rooms.js` holds the room
-model — join codes, options, seats, spectators, host succession — with no knowledge of
-sockets or the engine.
+`emptyRoomTtlMs`, `reconnectGraceMs`) are options so tests need not wait for them.
+`rooms.js` holds the room model — join codes, options, seats, spectators, host
+succession — with no knowledge of sockets or the engine.
 
 **Rooms.** One server hosts many tables. A room owns its members, its options, its bots
 and one engine session, and every table event is emitted to the Socket.IO room named by
@@ -45,7 +45,8 @@ the six-character join code. `/room/CODE` on the frontend is the invite link.
   seat when one frees before the next hand is dealt. Bots fill whatever seats are still
   empty when the host starts a hand.
 - Room options: `variant` (`standard` | `pips`), `teams` (on/off), `targetScore`,
-  `visibility` (`public` lists it in the lobby, `private` is invite-link only).
+  `visibility` (`public` lists it in the lobby, `private` is invite-link only), and
+  `onDisconnect` (`bot` hands a lost seat to a bot, `lobby` ends the hand).
 
 **Real-time Communication:**
 - Backend uses Socket.IO server on port 4000
@@ -55,7 +56,8 @@ the six-character join code. `/room/CODE` on the frontend is the invite link.
 - Server to client, to the caller: `handle_registered`, `room_joined`, `room_left`,
   `room_error`, `room_list`, `invalid_play`
 - Server to client, to one room: `room_state`, `player_list`, `game_started`,
-  `game_state`, `deal_hand`, `legal_moves`, `collected`, `trick_won`, `game_over`
+  `game_state`, `deal_hand`, `legal_moves`, `collected`, `trick_won`, `game_over`,
+  `player_disconnected`, `player_reconnected`, `seat_taken_by_bot`, `hand_abandoned`
 - `deal_hand` and `legal_moves` go to one player; `legal_moves` accompanies every
   `deal_hand` and lists exactly the cards that player may play now (empty when it is not
   their turn, and while a completed trick is being displayed)
@@ -64,8 +66,8 @@ the six-character join code. `/room/CODE` on the frontend is the invite link.
 **Game State Management:**
 - All state is in memory, per room: `Map<code, room>`, each with its own engine session
   and its own bot registry
-- Identity is the `socket.id`, resolved in exactly one place — `memberKey(socket)` in
-  `createServer.js` — so a persistent id (WS-06) is a one-function change
+- Identity is the client's persistent `playerId`, resolved in exactly one place —
+  `memberKey(socket)` in `createServer.js`
 - Card dealing, trick resolution, and scoring handled server-side
 
 **Frontend State:**
@@ -141,19 +143,36 @@ See `backend/src/selfplay/README.md` for the record format.
   the highest total, so the winner is never ambiguous
 
 **Player Management:**
-- Players register a handle, then create or join a room; identity is the raw `socket.id`
-- KNOWN GAP: there is no persistent player id and no localStorage. A refresh makes you
-  a new player and you lose your seat. Reconnection is not implemented — a disconnect
-  mid-hand wedges the table, because the departed socket id stays in `playerOrder` and
-  no human or bot can ever take its turn. The room outlives the refresh, so the player
-  rejoins as a spectator rather than losing the table entirely
+- Players register a handle, then create or join a room. Identity is a `playerId` the
+  browser mints with `crypto.randomUUID()` and keeps in `localStorage` (with the handle),
+  sent with every `register_handle` and confirmed back on `handle_registered`
+- The server keys seats, room membership and every `io.to(...)` by that id, resolved in
+  one place — `memberKey(socket)` in `createServer.js`. Each socket also joins a
+  Socket.IO room named by the id, so all of a player's tabs receive their events and the
+  last one to register names them. An id the server does not recognise as client-minted
+  is refused and the socket id is used instead, which simply loses the reconnect guarantee
+- **Reconnect.** A seated player who drops mid-match keeps their seat while a countdown
+  runs (`reconnectGraceMs`, one minute by default). The table waits — no bot and no human
+  plays for them — and the room broadcasts `player_disconnected {playerId, handle,
+  deadline}`, with the same fact on `room_state.absent` for anyone arriving mid-countdown.
+  Rejoining with the same `playerId` cancels it, re-sends `game_state`, `collected`,
+  `deal_hand` and `legal_moves` to the returning socket, and broadcasts
+  `player_reconnected`
+- On timeout, the room option `onDisconnect` decides. `'bot'` (the default) seats a bot
+  under the departed id — a dealt hand is fixed to four player ids, so a replacement has
+  to answer to the id it replaces — broadcasts `seat_taken_by_bot`, and leaves the human
+  to return as a spectator; the seat is no longer theirs to play. `'lobby'` ends the hand,
+  broadcasts `hand_abandoned` and returns the room to `waiting`
+- Leaving or being kicked mid-match takes the same path, so no route out of a seat can
+  wedge the table. A drop while the room is still `waiting` frees the seat immediately
 
 **UI Features:**
-- Lobby: create a room (name, visibility, variant, teams, target score), a public room
-  list, and join by code
+- Lobby: create a room (name, visibility, variant, teams, target score, disconnect
+  policy), a public room list, and join by code
 - Room screen: the code shown large with a copy-invite-link button, seated players with a
   host badge, spectators, options (editable by the host), host-only Start, and Leave
 - Spectator view: the table with no hand and a "Spectating" label
+- Reconnect overlay on the table naming who dropped and how long they have to return
 - Team-based scoring display (players 0&2 vs 1&3), or per-player scores when the room has
   teams off
 - Real-time trick display with card color coding  
@@ -163,10 +182,10 @@ See `backend/src/selfplay/README.md` for the record format.
 - Visually distinguish individuals that belong to the same team
 
 **Collected Cards System:**
-- Backend tracks collected cards by socket.id in `game.collected` object
+- Backend tracks collected cards by `playerId` in the engine's `collected` object
 - Real-time updates emitted via `collected` event after each trick completion
 - Frontend displays only point cards (♥, Q♠, J♦, 10♣) with proper color coding
-- During gameplay: collected cards keyed by socket.id for real-time display
+- During gameplay: collected cards keyed by `playerId` for real-time display
 - Game over: collected cards converted to player handles for final summary
 
 **LLM Bot System:**

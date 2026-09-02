@@ -18,11 +18,14 @@ function roomState(overrides: Partial<RoomState> = {}): RoomState {
     code: 'KJ7P2M',
     name: 'Friday night',
     host: me,
-    options: { variant: 'standard', teams: true, targetScore: 1000, visibility: 'public' },
+    options: {
+      variant: 'standard', teams: true, targetScore: 1000, visibility: 'public', onDisconnect: 'bot',
+    },
     seats: [me, ann],
     spectators: [],
     capacity: 4,
     phase: 'waiting',
+    absent: [],
     ...overrides,
   };
 }
@@ -92,7 +95,7 @@ describe('Room', () => {
     await userEvent.selectOptions(screen.getByLabelText('Hearts'), 'pips');
     await userEvent.click(screen.getByRole('button', { name: 'Apply options' }));
     expect(mockSocketInstance.emit).toHaveBeenCalledWith('update_room_options', {
-      variant: 'pips', teams: true, targetScore: 1000, visibility: 'public',
+      variant: 'pips', teams: true, targetScore: 1000, visibility: 'public', onDisconnect: 'bot',
     });
   });
 

@@ -6,6 +6,7 @@ import { displayTeamScores, teamOf } from '../lib/scores';
 import CollectedCardsModal from './CollectedCardsModal';
 import GameOverModal, { GameOverData } from './GameOverModal';
 import Hand from './Hand';
+import ReconnectOverlay from './ReconnectOverlay';
 import RoundHistory from './RoundHistory';
 import Scoreboard, { IndividualScores } from './Scoreboard';
 import TableSeats from './TableSeats';
@@ -15,8 +16,11 @@ import { button, page } from './styles';
 const TRICK_FLASH_MS = 2500;
 
 export default function GameTable() {
-  const { handle, hand, legalMoves, gameState, socket, playerId: myPlayerId, isHost, isSpectator, room,
+  const { handle, hand, legalMoves, gameState, socket, playerId, isHost, isSpectator, room,
     players } = usePlayer();
+  // A bot that took over a seat still answers to the id of the player who left it, so a
+  // spectator must not recognise that seat as their own.
+  const myPlayerId = isSpectator ? '' : playerId;
   const [playedCard, setPlayedCard] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<GameOverData | null>(null);
@@ -140,6 +144,8 @@ export default function GameTable() {
           Spectating
         </div>
       )}
+
+      <ReconnectOverlay />
 
       <div role="status" style={{ textAlign: 'center', marginBottom: 12, fontSize: 16, fontWeight: 500 }}>
         <div style={{ color: isMyTurn ? '#2e7d32' : '#555' }}>{turnMessage}</div>

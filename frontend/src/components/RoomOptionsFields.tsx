@@ -21,6 +21,11 @@ const VISIBILITY_LABEL: Record<RoomOptions['visibility'], string> = {
   private: 'Private — invite link only',
 };
 
+const DISCONNECT_LABEL: Record<RoomOptions['onDisconnect'], string> = {
+  bot: 'A bot takes over the seat',
+  lobby: 'End the hand and wait in the room',
+};
+
 /** The room's rules, editable when `onChange` is given and read-only otherwise. */
 export default function RoomOptionsFields({ options, onChange }: RoomOptionsFieldsProps) {
   if (!onChange) {
@@ -30,6 +35,7 @@ export default function RoomOptionsFields({ options, onChange }: RoomOptionsFiel
         <div>Scoring: {options.teams ? 'teams' : 'individuals'}</div>
         <div>Target score: {options.targetScore}</div>
         <div>Visibility: {VISIBILITY_LABEL[options.visibility]}</div>
+        <div>If someone drops: {DISCONNECT_LABEL[options.onDisconnect]}</div>
       </div>
     );
   }
@@ -83,6 +89,20 @@ export default function RoomOptionsFields({ options, onChange }: RoomOptionsFiel
           onChange={e => set('visibility', e.target.value as RoomOptions['visibility'])}
         >
           {Object.entries(VISIBILITY_LABEL).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+      </label>
+
+      <label style={row}>
+        If someone drops
+        <select
+          value={options.onDisconnect}
+          aria-label="If someone drops"
+          style={field}
+          onChange={e => set('onDisconnect', e.target.value as RoomOptions['onDisconnect'])}
+        >
+          {Object.entries(DISCONNECT_LABEL).map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
           ))}
         </select>
