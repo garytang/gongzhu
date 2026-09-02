@@ -4,8 +4,11 @@ const {
   createMatch, startHand, legalMoves, playCard, observation,
 } = require('../engine/game');
 const { makePolicy } = require('./policies');
+const { SCHEMA_VERSION } = require('./meta');
 
 const SEATS = ['p0', 'p1', 'p2', 'p3'];
+
+const DEFAULT_POLICIES = ['avoidPoints', 'avoidPoints', 'avoidPoints', 'avoidPoints'];
 
 /**
  * Play one hand, emitting a training record at every decision point.
@@ -15,14 +18,19 @@ const SEATS = ['p0', 'p1', 'p2', 'p3'];
  * makes the log directly usable for supervised or offline-RL training without a
  * second pass to join decisions to outcomes.
  */
-function playHand(match, policies, { matchId, onRecord } = {}) {
+async function playHand(match, policies, { matchId, datasetId, onRecord } = {}) {
   const pending = [];
 
   while (match.phase === 'playing') {
     const player = match.hand.turn;
     const obs = observation(match, player);
     const policy = policies[player];
-    const action = policy.choose(obs, { match });
+
+    // A policy may be synchronous (the heuristics) or return a promise (an LLM, or a
+    // model served over the network). Awaiting only a real thenable keeps a batch of
+    // synchronous policies running in one uninterrupted pass.
+    const chosen = policy.choose(obs, { match });
+    const action = typeof chosen?.then === 'function' ? await chosen : chosen;
 
     const legal = legalMoves(match, player);
     if (!legal.includes(action)) {
@@ -30,6 +38,8 @@ function playHand(match, policies, { matchId, onRecord } = {}) {
     }
 
     pending.push({
+      schemaVersion: SCHEMA_VERSION,
+      datasetId: datasetId || null,
       matchId,
       seed: String(match.seed),
       handNumber: match.handNumber,
@@ -68,14 +78,16 @@ function playHand(match, policies, { matchId, onRecord } = {}) {
 }
 
 /**
- * Play a full match to its target score. Deterministic given `seed`.
+ * Play a full match to its target score. Deterministic given `seed`, for any policy
+ * that is itself deterministic.
  */
-function runMatch({
+async function runMatch({
   seed = 'match',
   matchId = `m-${seed}`,
-  policyNames = ['avoidPoints', 'avoidPoints', 'avoidPoints', 'avoidPoints'],
+  policyNames = DEFAULT_POLICIES,
   options = {},
   maxHands = 200,
+  datasetId,
   onRecord,
 } = {}) {
   const playerIds = SEATS.slice();
@@ -88,7 +100,7 @@ function runMatch({
 
   while (match.phase !== 'matchComplete' && match.handNumber < maxHands) {
     match = startHand(match);
-    const played = playHand(match, policies, { matchId, onRecord });
+    const played = await playHand(match, policies, { matchId, datasetId, onRecord });
     match = played.match;
     hands.push(played.result);
   }
@@ -105,44 +117,83 @@ function runMatch({
   };
 }
 
+/** The seed for match `index` of a batch. Fixed here so every runner agrees on it. */
+function seedFor(seedPrefix, index) {
+  return `${seedPrefix}-${index}`;
+}
+
+const emptyStats = () => ({ games: 0, handsPlayed: 0, decisions: 0, wins: {}, scoreTotals: {} });
+
+/** Fold one match summary into a running aggregate. */
+function accumulate(stats, summary) {
+  stats.games += 1;
+  stats.handsPlayed += summary.hands;
+  for (const [name, total] of Object.entries(summary.totals)) {
+    stats.scoreTotals[name] = (stats.scoreTotals[name] || 0) + total;
+  }
+  if (summary.outcome) {
+    for (const winner of summary.outcome.winners) {
+      stats.wins[winner] = (stats.wins[winner] || 0) + 1;
+    }
+  }
+  return stats;
+}
+
+/** Combine aggregates from several workers. Addition only, so worker count cannot change it. */
+function mergeStats(parts) {
+  const merged = emptyStats();
+  for (const part of parts) {
+    merged.games += part.games;
+    merged.handsPlayed += part.handsPlayed;
+    merged.decisions += part.decisions;
+    for (const [name, n] of Object.entries(part.wins)) merged.wins[name] = (merged.wins[name] || 0) + n;
+    for (const [name, n] of Object.entries(part.scoreTotals)) {
+      merged.scoreTotals[name] = (merged.scoreTotals[name] || 0) + n;
+    }
+  }
+  return merged;
+}
+
 /**
- * Run many matches. Returns aggregate stats; per-decision records go to `onRecord`.
+ * Run matches `[from, to)` of a batch. Returns aggregate stats; per-decision records go
+ * to `onRecord`. Splitting a batch by index is what lets workers divide the work and
+ * still produce exactly the output a single process would.
  */
-function runBatch({
-  games = 100,
+async function runBatchRange({
+  from = 0,
+  to = 100,
   seedPrefix = 'batch',
   policyNames,
   options = {},
+  datasetId,
   onRecord,
   onMatch,
 } = {}) {
-  const wins = {};
-  const scoreTotals = {};
-  let decisions = 0;
-  let handsPlayed = 0;
+  const stats = emptyStats();
 
-  for (let i = 0; i < games; i++) {
-    const summary = runMatch({
-      seed: `${seedPrefix}-${i}`,
-      matchId: `${seedPrefix}-${i}`,
+  for (let i = from; i < to; i++) {
+    const seed = seedFor(seedPrefix, i);
+    // eslint-disable-next-line no-await-in-loop -- matches are sequential by design
+    const summary = await runMatch({
+      seed,
+      matchId: seed,
       policyNames,
       options,
-      onRecord: onRecord && ((record) => { decisions++; onRecord(record); }),
+      datasetId,
+      onRecord: (record) => { stats.decisions++; if (onRecord) onRecord(record); },
     });
-    handsPlayed += summary.hands;
-
-    for (const [name, total] of Object.entries(summary.totals)) {
-      scoreTotals[name] = (scoreTotals[name] || 0) + total;
-    }
-    if (summary.outcome) {
-      for (const winner of summary.outcome.winners) {
-        wins[winner] = (wins[winner] || 0) + 1;
-      }
-    }
+    accumulate(stats, summary);
     if (onMatch) onMatch(summary);
   }
 
-  return { games, handsPlayed, decisions, wins, scoreTotals };
+  return stats;
 }
 
-module.exports = { runMatch, runBatch, playHand, SEATS };
+/** Run `games` matches, seeded `${seedPrefix}-0` .. `${seedPrefix}-${games-1}`. */
+function runBatch({ games = 100, ...rest } = {}) {
+  return runBatchRange({ from: 0, to: games, ...rest });
+}
+
+module.exports = {
+  runMatch, runBatch, runBatchRange, playHand, mergeStats, seedFor, SEATS, DEFAULT_POLICIES,
+};
