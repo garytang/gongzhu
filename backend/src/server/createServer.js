@@ -7,6 +7,7 @@ const { Server } = require('socket.io');
 
 const engine = require('../engine');
 const { createBotRegistry } = require('./bots');
+const { PROVIDER_KEYS } = require('../bots/providers');
 
 const { SEATS } = engine;
 
@@ -28,6 +29,26 @@ function corsOrigins(value = process.env.CORS_ORIGIN, env = process.env.NODE_ENV
 }
 
 /**
+ * Which LLM provider fills empty seats. `LLM_PROVIDER` names one explicitly and must
+ * have its key set; otherwise the first provider in `PROVIDER_KEYS` order whose key is
+ * present is used. Returns null when no provider is usable, in which case seats are
+ * filled with rule-based bots.
+ */
+function resolveLLMProvider(env = process.env) {
+  const chosen = String(env.LLM_PROVIDER || '').trim().toLowerCase();
+  if (chosen) {
+    if (!PROVIDER_KEYS[chosen]) {
+      throw new Error(`Unknown LLM_PROVIDER "${chosen}"; expected one of ${Object.keys(PROVIDER_KEYS).join(', ')}`);
+    }
+    if (!env[PROVIDER_KEYS[chosen]]) {
+      throw new Error(`LLM_PROVIDER is ${chosen} but ${PROVIDER_KEYS[chosen]} is not set`);
+    }
+    return chosen;
+  }
+  return Object.keys(PROVIDER_KEYS).find(name => env[PROVIDER_KEYS[name]]) || null;
+}
+
+/**
  * The Socket.IO adapter over the rules engine.
  *
  * All rules live in `src/engine`. This file owns only what the engine deliberately does
@@ -42,7 +63,7 @@ function createGongzhuServer({
   botDelayMs = 1000,
   trickDelayMs = 1000,
   corsOrigin = corsOrigins(),
-  useLLMBots = Boolean(process.env.ANTHROPIC_API_KEY),
+  llmProvider = resolveLLMProvider(),
   targetScore = 1000,
   log = console,
 } = {}) {
@@ -240,12 +261,8 @@ function createGongzhuServer({
     removeAllBots();
     const seats = humans.slice(0, SEATS);
     while (seats.length < SEATS) {
-      const bot = useLLMBots
-        ? botRegistry.createLLMBot({
-          provider: 'anthropic',
-          handle: `Claude Bot ${seats.length + 1}`,
-          fallbackDifficulty: 'hard',
-        }, describeTable)
+      const bot = llmProvider
+        ? botRegistry.createLLMBot({ provider: llmProvider, fallbackDifficulty: 'hard' }, describeTable)
         : botRegistry.createBot('easy');
       seats.push(seat(bot).socketId);
     }
@@ -366,4 +383,4 @@ function createGongzhuServer({
   };
 }
 
-module.exports = { createGongzhuServer, corsOrigins };
+module.exports = { createGongzhuServer, corsOrigins, resolveLLMProvider };

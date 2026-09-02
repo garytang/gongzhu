@@ -45,10 +45,14 @@ with a 400.
 ## Configuration
 
 ```bash
-ANTHROPIC_API_KEY=...      # or GOOGLE_API_KEY / OPENROUTER_API_KEY
-ANTHROPIC_MODEL=claude-haiku-4-5
+LLM_PROVIDER=openrouter    # anthropic | openrouter | google; unset = first key found
+OPENROUTER_API_KEY=...     # or ANTHROPIC_API_KEY / GOOGLE_API_KEY
+OPENROUTER_MODEL=anthropic/claude-haiku-4.5
 LLM_BOT_DEBUG=1            # log each prompt, raw response and parsed reasoning
 ```
+
+The live server fills empty seats from `LLM_PROVIDER`; the `/api/bots/create` endpoint
+can name any provider per bot regardless.
 
 Keys: [Anthropic Console](https://console.anthropic.com/),
 [Google AI Studio](https://aistudio.google.com/apikey),

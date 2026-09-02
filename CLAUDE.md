@@ -141,7 +141,7 @@ See `backend/src/selfplay/README.md` for the record format.
 - Game memory tracking played cards and player tendencies
 - Strategic decision making with various gameplay strategies
 - API endpoints for bot management: `/api/bots/create`, `/api/bots/list`, `/api/bots/clear`
-- Environment variables for API keys: `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`
+- `LLM_PROVIDER` (anthropic | openrouter | google) picks which provider fills empty seats; unset = first key present. Keys: `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`; models: `*_MODEL`
 - Seamless integration with existing Socket.IO game flow
 
 ## Development Notes
