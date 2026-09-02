@@ -1,190 +1,311 @@
+'use strict';
+
 const assert = require('assert');
 const { io: Client } = require('socket.io-client');
-const { createServer } = require('http');
-const { Server } = require('socket.io');
 
-describe('Socket.IO Integration Tests', () => {
-  let serverSocket, clientSocket1, clientSocket2, clientSocket3, clientSocket4;
-  let httpServer, ioServer;
+const engine = require('../src/engine');
+const { createGongzhuServer, corsOrigins } = require('../src/server/createServer');
+const { createBotRegistry } = require('../src/server/bots');
 
-  before((done) => {
-    httpServer = createServer();
-    ioServer = new Server(httpServer);
-    
-    // Simple mock game logic for testing
-    const players = new Map();
-    let game = null;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const quiet = { log() {}, warn() {}, error() {} };
 
-    function broadcastPlayerList() {
-      const playerList = Array.from(players.entries()).map(([socketId, handle]) => ({
-        playerId: socketId,
-        handle: handle
-      }));
-      ioServer.emit('player_list', playerList);
+function connect(url, handle) {
+  const client = new Client(url, { transports: ['websocket'] });
+  return new Promise((resolve) => {
+    client.on('player_list', function seated(list) {
+      if (list.some(p => p.handle === handle)) {
+        client.off('player_list', seated);
+        resolve(client);
+      }
+    });
+    client.on('connect', () => client.emit('register_handle', { handle }));
+  });
+}
+
+function waitFor(client, event, predicate = () => true, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      client.off(event, listener);
+      reject(new Error(`Timed out waiting for "${event}"`));
+    }, timeoutMs);
+    function listener(payload) {
+      if (!predicate(payload)) return;
+      clearTimeout(timer);
+      client.off(event, listener);
+      resolve(payload);
     }
+    client.on(event, listener);
+  });
+}
 
-    ioServer.on('connection', (socket) => {
-      serverSocket = socket;
-
-      socket.on('register_handle', (data) => {
-        const handle = typeof data === 'string' ? data : data.handle;
-        players.set(socket.id, handle);
-        broadcastPlayerList();
-      });
-
-      socket.on('start_game', () => {
-        if (players.size === 4) {
-          ioServer.emit('game_started');
-          // Mock game state
-          const playerIds = Array.from(players.keys());
-          const playerHandles = playerIds.map(id => ({
-            playerId: id,
-            handle: players.get(id)
-          }));
-          game = {
-            playerOrder: playerIds,
-            playerHandles,
-            trick: [],
-            turn: 0,
-            scores: Object.fromEntries(playerHandles.map(p => [p.playerId, 0]))
-          };
-          ioServer.emit('game_state', {
-            trick: game.trick,
-            turn: game.turn,
-            playerHandles: game.playerHandles,
-            scores: game.scores
-          });
-          // Mock deal hands
-          for (const pid of game.playerOrder) {
-            ioServer.to(pid).emit('deal_hand', ['A♠', 'K♠', 'Q♠']); // Mock hand
-          }
-        }
-      });
-
-      socket.on('play_card', (card) => {
-        if (game && game.playerOrder[game.turn] === socket.id) {
-          game.trick.push({ player: socket.id, card });
-          game.turn = (game.turn + 1) % game.playerOrder.length;
-          ioServer.emit('game_state', {
-            trick: game.trick,
-            turn: game.turn,
-            playerHandles: game.playerHandles,
-            scores: game.scores
-          });
-        }
-      });
-
-      socket.on('disconnect', () => {
-        players.delete(socket.id);
-        broadcastPlayerList();
-      });
+/**
+ * Plays every client's turn from the `legal_moves` the server sends, which is what a
+ * real client would do. A hand only ever shrinks, so acting once per hand size makes a
+ * repeated broadcast harmless.
+ */
+function autoplay(clients) {
+  const driver = { stopped: false, stopAfterNextPlay: false };
+  for (const client of clients) {
+    let hand = [];
+    let actedAtSize = null;
+    client.on('game_started', () => { actedAtSize = null; });
+    client.on('deal_hand', (cards) => { hand = cards; });
+    client.on('legal_moves', (moves) => {
+      if (driver.stopped || moves.length === 0 || hand.length === actedAtSize) return;
+      actedAtSize = hand.length;
+      client.emit('play_card', moves[0]);
+      if (driver.stopAfterNextPlay) driver.stopped = true;
     });
+  }
+  return driver;
+}
 
-    httpServer.listen(() => {
-      const { port } = httpServer.address();
-      
-      clientSocket1 = new Client(`http://localhost:${port}`);
-      clientSocket2 = new Client(`http://localhost:${port}`);
-      clientSocket3 = new Client(`http://localhost:${port}`);
-      clientSocket4 = new Client(`http://localhost:${port}`);
-      
-      let connected = 0;
-      const checkConnection = () => {
-        connected++;
-        if (connected === 4) done();
-      };
-      
-      clientSocket1.on('connect', checkConnection);
-      clientSocket2.on('connect', checkConnection);
-      clientSocket3.on('connect', checkConnection);
-      clientSocket4.on('connect', checkConnection);
+/** The real server on an ephemeral port, with the display delays turned down. */
+async function table(playerCount, options = {}) {
+  const instance = createGongzhuServer({
+    botDelayMs: 0,
+    trickDelayMs: 5,
+    useLLMBots: false,
+    log: quiet,
+    ...options,
+  });
+  await new Promise(resolve => instance.server.listen(0, resolve));
+
+  const url = `http://localhost:${instance.server.address().port}`;
+  instance.clients = [];
+  for (let i = 0; i < playerCount; i++) {
+    instance.clients.push(await connect(url, `Player${i + 1}`));
+  }
+  return instance;
+}
+
+describe('Socket.IO server', function () {
+  this.timeout(20000);
+  let instance;
+
+  afterEach(async () => {
+    if (!instance) return;
+    for (const client of instance.clients) client.close();
+    await instance.close();
+    instance = null;
+  });
+
+  it('seats four registered players and deals thirteen cards each', async () => {
+    instance = await table(4);
+    const [client] = instance.clients;
+
+    const dealt = instance.clients.map(c => waitFor(c, 'deal_hand'));
+    const state = waitFor(client, 'game_state');
+    client.emit('start_game');
+
+    const hands = await Promise.all(dealt);
+    for (const hand of hands) assert.strictEqual(hand.length, 13);
+    assert.strictEqual(new Set(hands.flat()).size, 52);
+
+    const { playerHandles, teams } = await state;
+    assert.deepStrictEqual(playerHandles.map(p => p.handle).sort(),
+      ['Player1', 'Player2', 'Player3', 'Player4']);
+    // Teammates are seated across from each other, never side by side.
+    const seats = playerHandles.map(p => p.playerId);
+    assert.strictEqual(seats.indexOf(teams.team1[1]) - seats.indexOf(teams.team1[0]), 2);
+  });
+
+  it('forces the 2 of clubs holder to lead the first trick', async () => {
+    instance = await table(4);
+    const legal = instance.clients.map(c => waitFor(c, 'legal_moves'));
+    instance.clients[0].emit('start_game');
+
+    const moves = (await Promise.all(legal)).filter(m => m.length > 0);
+    assert.deepStrictEqual(moves, [['2♣']]);
+  });
+
+  it('rejects a card from a player whose turn it is not', async () => {
+    instance = await table(4);
+    const dealt = instance.clients.map(c => waitFor(c, 'deal_hand'));
+    const moves = instance.clients.map(c => waitFor(c, 'legal_moves'));
+    instance.clients[0].emit('start_game');
+    const hands = await Promise.all(dealt);
+
+    const idle = (await Promise.all(moves)).findIndex(m => m.length === 0);
+    const rejected = waitFor(instance.clients[idle], 'invalid_play');
+    instance.clients[idle].emit('play_card', hands[idle][0]);
+    assert.strictEqual(await rejected, hands[idle][0]);
+  });
+
+  it('announces who took each trick', async () => {
+    instance = await table(4);
+    const [client] = instance.clients;
+
+    autoplay(instance.clients);
+    const won = waitFor(client, 'trick_won');
+    const shown = waitFor(client, 'game_state', s => s.trick.length === 4);
+    client.emit('start_game');
+
+    const trick = await won;
+    assert.strictEqual(trick.winner, engine.determineTrickWinner(trick.trick));
+    assert.deepStrictEqual(trick.cards, trick.trick.map(t => t.card));
+    // The same fact reaches the client on game_state, for the trick still on screen.
+    assert.deepStrictEqual((await shown).lastTrick, { trick: trick.trick, winner: trick.winner });
+  });
+
+  it('plays a full hand and scores it exactly as the engine does', async () => {
+    instance = await table(4);
+    const [client] = instance.clients;
+
+    let state = null;
+    let collected = null;
+    client.on('game_state', (s) => { state = s; });
+    client.on('collected', (c) => { collected = c; });
+
+    autoplay(instance.clients);
+    const over = waitFor(client, 'game_over');
+    client.emit('start_game');
+    const result = await over;
+
+    assert.strictEqual(Object.values(collected).flat().length, 52);
+    const expected = engine.scoreHand(collected, {
+      variant: 'standard',
+      exposed: [],
+      teams: state.teams,
     });
+    assert.deepStrictEqual(result.scores, expected.individual);
+    assert.strictEqual(result.teamInfo.team1.roundScore, expected.teamScores.team1);
+    assert.strictEqual(result.teamInfo.team2.roundScore, expected.teamScores.team2);
+    assert.strictEqual(result.gameEnded, false);
+    assert.strictEqual(result.winningTeam, null);
+    // Collected cards are keyed by handle in the game-over summary.
+    assert.deepStrictEqual(Object.keys(result.collected).sort(),
+      ['Player1', 'Player2', 'Player3', 'Player4']);
   });
 
-  after(() => {
-    ioServer.close();
-    clientSocket1.close();
-    clientSocket2.close();
-    clientSocket3.close();
-    clientSocket4.close();
+  it('continues with the same teams and carries the running scores forward', async () => {
+    instance = await table(4);
+    const [client] = instance.clients;
+
+    autoplay(instance.clients);
+    const first = waitFor(client, 'game_state');
+    const over = waitFor(client, 'game_over');
+    client.emit('start_game');
+    const before = await first;
+    const result = await over;
+
+    const next = waitFor(client, 'game_state');
+    client.emit('continue_game');
+    const after = await next;
+
+    assert.deepStrictEqual(after.teams, before.teams);
+    assert.deepStrictEqual(after.playerHandles, before.playerHandles);
+    // The first hand's scores are the running totals; the old server always sent zeroes.
+    assert.deepStrictEqual(after.scores, result.scores);
+    assert.strictEqual(after.cumulativeTeamScores.team1, result.teamInfo.team1.cumulativeScore);
   });
 
-  it('should handle player registration', (done) => {
-    let playersReceived = 0;
-    const handlePlayerList = (playerList) => {
-      playersReceived++;
-      // Check that at least one player registered successfully
-      if (playersReceived === 1 && playerList.length >= 1) {
-        assert(playerList.some(p => p.handle === 'Player1'));
-        done();
-      }
-    };
+  it('names one winning team when both cross the target score at once', async () => {
+    // Both teams almost always finish a hand in the negative, so a target of 1 makes
+    // them cross together. The old server called that a win for both sides.
+    instance = await table(4, { targetScore: 1 });
+    const [client] = instance.clients;
 
-    clientSocket1.on('player_list', handlePlayerList);
-    clientSocket1.emit('register_handle', { handle: 'Player1' });
+    autoplay(instance.clients);
+    const over = waitFor(client, 'game_over');
+    client.emit('start_game');
+    const result = await over;
+
+    assert.strictEqual(result.gameEnded, true);
+    const { team1, team2 } = result.teamInfo;
+    const ahead = team1.cumulativeScore >= team2.cumulativeScore ? 1 : 2;
+    assert.strictEqual(result.winningTeam,
+      team1.cumulativeScore === team2.cumulativeScore ? null : ahead);
   });
 
-  it.skip('should start game with 4 players', (done) => {
-    let gameStartReceived = 0;
-    let gameStateReceived = 0;
-    let handsDealt = 0;
+  it('does not let a stale trick timer disturb a game started underneath it', async () => {
+    instance = await table(4, { trickDelayMs: 300 });
+    const [client] = instance.clients;
 
-    const handleGameStarted = () => {
-      gameStartReceived++;
-      if (gameStartReceived === 4) checkComplete();
-    };
+    let state = null;
+    client.on('game_state', (s) => { state = s; });
 
-    const handleGameState = (state) => {
-      gameStateReceived++;
-      assert(state.playerHandles);
-      assert.strictEqual(state.playerHandles.length, 4);
-      assert.strictEqual(state.turn, 0);
-      if (gameStateReceived === 4) checkComplete();
-    };
+    const driver = autoplay(instance.clients);
+    const trickDone = waitFor(client, 'game_state', s => s.trick.length === 4);
+    client.emit('start_game');
+    await trickDone;
 
-    const handleDealHand = (hand) => {
-      handsDealt++;
-      assert(Array.isArray(hand));
-      if (handsDealt === 4) checkComplete();
-    };
+    // Restart while the completed trick is still on screen, and let exactly one card be
+    // played into the new game before the old table's timer fires.
+    driver.stopAfterNextPlay = true;
+    client.emit('start_game');
 
-    const checkComplete = () => {
-      if (gameStartReceived === 4 && gameStateReceived === 4 && handsDealt === 4) {
-        done();
-      }
-    };
-
-    clientSocket1.on('game_started', handleGameStarted);
-    clientSocket2.on('game_started', handleGameStarted);
-    clientSocket3.on('game_started', handleGameStarted);
-    clientSocket4.on('game_started', handleGameStarted);
-
-    clientSocket1.on('game_state', handleGameState);
-    clientSocket2.on('game_state', handleGameState);
-    clientSocket3.on('game_state', handleGameState);
-    clientSocket4.on('game_state', handleGameState);
-
-    clientSocket1.on('deal_hand', handleDealHand);
-    clientSocket2.on('deal_hand', handleDealHand);
-    clientSocket3.on('deal_hand', handleDealHand);
-    clientSocket4.on('deal_hand', handleDealHand);
-
-    clientSocket1.emit('start_game');
+    await waitFor(client, 'game_state', s => s.trick.length === 1);
+    await sleep(400);
+    assert.strictEqual(state.trick.length, 1, 'the stale timer cleared the new trick');
   });
 
-  it.skip('should handle basic card play', (done) => {
-    const handleGameState = (state) => {
-      // Just verify that game state updates are received
-      if (state && typeof state.turn === 'number') {
-        assert(Array.isArray(state.trick));
-        assert(Array.isArray(state.playerHandles));
-        done();
-      }
-    };
+  it('fills the empty seats with bots and plays the hand to the end', async () => {
+    instance = await table(1);
+    const [client] = instance.clients;
 
-    clientSocket1.on('game_state', handleGameState);
-    
-    // First player plays a card
-    clientSocket1.emit('play_card', 'A♠');
+    let collected = null;
+    client.on('collected', (c) => { collected = c; });
+
+    autoplay(instance.clients);
+    const over = waitFor(client, 'game_over');
+    client.emit('start_game');
+    const result = await over;
+
+    assert.strictEqual(Object.values(collected).flat().length, 52);
+    assert.strictEqual(Object.keys(result.scores).length, 4);
+    assert.strictEqual(instance.bots.ids().length, 3);
+  });
+});
+
+describe('bot registry', () => {
+  const position = {
+    legalMoves: ['3♦', 'K♠', 'Q♥'],
+    trick: [],
+    hand: ['3♦', 'K♠', 'Q♥'],
+  };
+
+  it('falls back to a legal card when a bot throws', async () => {
+    const bot = createBotRegistry(quiet).registerCustom('x', 'Throwing bot', () => {
+      throw new Error('provider exploded');
+    });
+    assert.ok(position.legalMoves.includes(await bot.chooseCard(position)));
+  });
+
+  it('falls back to a legal card when a bot names an illegal one', async () => {
+    const bot = createBotRegistry(quiet).registerCustom('x', 'Cheating bot', () => 'A♠');
+    assert.ok(position.legalMoves.includes(await bot.chooseCard(position)));
+  });
+
+  it('plays a forced move without consulting the bot', async () => {
+    let consulted = false;
+    const bot = createBotRegistry(quiet).registerCustom('x', 'Idle bot', () => {
+      consulted = true;
+      return 'A♠';
+    });
+    assert.strictEqual(await bot.chooseCard({ legalMoves: ['2♣'], trick: [], hand: ['2♣'] }), '2♣');
+    assert.strictEqual(consulted, false);
+  });
+});
+
+describe('CORS origins', () => {
+  it('gives a bare hostname the scheme a browser will send', () => {
+    assert.deepStrictEqual(corsOrigins('gongzhu.up.railway.app'), ['https://gongzhu.up.railway.app']);
+  });
+
+  it('accepts a comma-separated list and keeps explicit schemes', () => {
+    assert.deepStrictEqual(
+      corsOrigins(' https://gongzhu.up.railway.app , http://localhost:3000 ,example.com '),
+      ['https://gongzhu.up.railway.app', 'http://localhost:3000', 'https://example.com']);
+  });
+
+  it('allows any origin in development when unset', () => {
+    assert.strictEqual(corsOrigins(undefined, 'development'), '*');
+    assert.strictEqual(corsOrigins('', 'development'), '*');
+  });
+
+  it('refuses to start unconfigured in production', () => {
+    assert.throws(() => corsOrigins(undefined, 'production'), /CORS_ORIGIN/);
   });
 });
