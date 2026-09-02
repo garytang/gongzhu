@@ -12,8 +12,12 @@ const { DEFAULT_OPTIONS } = require('../engine/game');
  */
 const SCHEMA_VERSION = 1;
 
-/** The engine option fields that change what a dataset means. */
-const PROVENANCE_OPTIONS = ['variant', 'teams', 'targetScore', 'firstLead', 'exposuresEnabled'];
+/**
+ * Every engine option changes what a dataset means, so the whole set goes into the
+ * digest. Deriving the list rather than enumerating it means a new engine option
+ * cannot quietly fall out of a dataset's identity.
+ */
+const PROVENANCE_OPTIONS = Object.keys(DEFAULT_OPTIONS);
 
 let cachedSha = null;
 
@@ -68,4 +72,4 @@ function headerRecord(meta) {
   return { type: 'header', meta };
 }
 
-module.exports = { SCHEMA_VERSION, PROVENANCE_OPTIONS, gitSha, buildMeta, headerRecord };
+module.exports = { SCHEMA_VERSION, buildMeta, headerRecord };

@@ -1,9 +1,9 @@
 'use strict';
 
-const fs = require('fs');
 const { parentPort, workerData } = require('worker_threads');
 
 const { runBatchRange } = require('./runner');
+const { openJsonl } = require('./jsonl');
 
 /**
  * One shard of a parallel batch. Records go straight to this worker's own JSONL file;
@@ -17,7 +17,7 @@ async function main() {
   // loaded in a fresh worker; `--require` names the modules that register them.
   for (const modulePath of preload || []) require(modulePath);
 
-  const stream = shardPath ? fs.createWriteStream(shardPath, { flags: 'w' }) : null;
+  const sink = shardPath ? openJsonl(shardPath) : null;
   const stats = await runBatchRange({
     from,
     to,
@@ -25,10 +25,10 @@ async function main() {
     policyNames,
     options,
     datasetId,
-    onRecord: stream ? record => stream.write(`${JSON.stringify(record)}\n`) : undefined,
+    onRecord: sink ? sink.write : undefined,
   });
+  if (sink) await sink.close();
 
-  if (stream) await new Promise((resolve, reject) => stream.end(err => (err ? reject(err) : resolve())));
   parentPort.postMessage({ ok: true, stats });
 }
 

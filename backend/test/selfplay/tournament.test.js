@@ -11,7 +11,7 @@ describe('self-play: tournament seatings', () => {
       const seatings = seatingsFor(names, 'individual');
       for (const name of names) {
         const perSeat = [0, 1, 2, 3].map(
-          seat => seatings.filter(s => s.seats[seat] === name).length,
+          seat => seatings.filter(s => s[seat] === name).length,
         );
         expect(new Set(perSeat).size, `${names.join('')} / ${name}`).to.equal(1);
       }
@@ -21,7 +21,7 @@ describe('self-play: tournament seatings', () => {
   it('plays every pair in both seatings for partnerships', () => {
     const seatings = seatingsFor(['a', 'b', 'c'], 'teams');
     expect(seatings).to.have.length(6); // 3 pairs x 2 seatings
-    for (const { seats } of seatings) {
+    for (const seats of seatings) {
       expect(seats[0]).to.equal(seats[2]);
       expect(seats[1]).to.equal(seats[3]);
       expect(seats[0]).to.not.equal(seats[1]);

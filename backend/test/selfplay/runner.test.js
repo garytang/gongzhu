@@ -1,7 +1,7 @@
 'use strict';
 
 const { expect } = require('chai');
-const { runMatch, runBatch, runBatchRange } = require('../../src/selfplay/runner');
+const { runMatch, runBatch, runBatchRange, TEAMS } = require('../../src/selfplay/runner');
 const { makePolicy, registerPolicy, POLICIES } = require('../../src/selfplay/policies');
 const {
   createMatch, startHand, legalMoves, observation, playCard,
@@ -93,6 +93,11 @@ describe('self-play: runner', () => {
     }
   });
 
+  it('builds no records at all when nothing is listening', async () => {
+    const summary = await runMatch({ seed: 'rec' });
+    expect(summary.decisions).to.equal(summary.hands * 52);
+  });
+
   it('never leaks another player\'s cards into a record', async () => {
     const records = [];
     await runMatch({ seed: 'leak', onRecord: r => records.push(r) });
@@ -103,8 +108,7 @@ describe('self-play: runner', () => {
   });
 
   it('supports both scoring modes and both heart variants', async () => {
-    const teams = { team1: ['p0', 'p2'], team2: ['p1', 'p3'] };
-    const teamGame = await runMatch({ seed: 't1', options: { teams } });
+    const teamGame = await runMatch({ seed: 't1', options: { teams: TEAMS } });
     expect(teamGame.teamTotals).to.have.keys(['team1', 'team2']);
     expect(teamGame.outcome.kind).to.equal('teams');
 

@@ -17,9 +17,10 @@ npm run tournament -- --policies cardCounter,avoidPoints --matches 30 --teams
 
 ## Throughput
 
-About 1,300 matches/second single-threaded and 5,500 with `--workers 8` on an M-series
-laptop (~530 decisions per match). Writing JSONL is the bottleneck once `--out` is set:
-records average roughly 800 bytes, so a 2,000-match dataset is close to 900 MB.
+About 1,450 matches/second single-threaded and 5,500 with `--workers 8` on an M-series
+laptop (~530 decisions per match). Writing JSONL is the bottleneck once `--out` is set,
+where the same machine does about 1,000 matches/s: records average roughly 800 bytes, so
+a 2,000-match dataset is close to 900 MB. Runs with no `--out` build no records at all.
 
 `--workers N` splits the batch into N contiguous seed ranges, one worker thread each,
 and concatenates the shards in range order. The seed of match `i` does not depend on
@@ -43,7 +44,7 @@ information set.
   players have shown void in which suit, and therefore when a card will certainly win.
   Avoids leading into a void while the pig and high hearts are out, feeds the sheep to
   its teammate, and dumps the pig and high hearts on whoever is taking the trick.
-  Beats `avoidPoints` by 12–21 points per hand individually and 19–42 in partnerships.
+  Beats `avoidPoints` by 13–20 points per hand individually and 19–39 in partnerships.
 
 `registerPolicy(name, factory)` adds a policy from outside this directory — an LLM bot
 in `src/bots/`, or a trained model — without editing the harness. `factory(name)` is
@@ -61,15 +62,15 @@ mode: individual   seatings: 4   matches: 120   seed: tourney
 
 policy       matches  hands  win rate (95% CI)  mean hand score (95% CI)
 -----------  -------  -----  -----------------  ------------------------
-cardCounter      120   2434        53.3% ± 8.9               -54.5 ± 4.8
-avoidPoints      120   2434        48.3% ± 8.9               -63.4 ± 5.6
+cardCounter      120   2430        54.2% ± 8.9               -54.9 ± 4.8
+avoidPoints      120   2430        47.5% ± 8.9               -63.3 ± 5.6
 ```
 
 Seat matters in Gongzhu — the deal is fixed by the seed, and playing last to a trick is
 worth something — so every arrangement is played in every rotation and no policy is
 credited for its seat. With `--teams` each pair of policies plays as the two
-partnerships, in both seatings. Everything is derived from `--seed`, so a run replays
-exactly.
+partnerships, in both seatings; so does individual mode when there are more policies
+than seats. Everything is derived from `--seed`, so a run replays exactly.
 
 Intervals are normal approximations. Mean hand score is the lower-variance signal and
 should be the one you trust: hands within a match are not independent, so a real

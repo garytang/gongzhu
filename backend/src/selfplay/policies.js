@@ -4,6 +4,7 @@ const { createRng } = require('../engine/rng');
 const {
   PIG, SHEEP, TRANSFORMER, isPointCard, isHeart, suitOf, rankValue,
 } = require('../engine/cards');
+const { winningPlay } = require('./card-utils');
 const { cardCounterPolicy } = require('./card-counter');
 
 /**
@@ -59,9 +60,7 @@ const avoidPointsPolicy = {
       return moves.slice().sort((a, b) => rankValue(b) - rankValue(a))[0];
     }
 
-    const highestSoFar = obs.trick
-      .filter(t => suitOf(t.card) === ledSuit)
-      .reduce((best, t) => (rankValue(t.card) > rankValue(best.card) ? t : best), obs.trick[0]);
+    const highestSoFar = winningPlay(obs.trick);
     const trickHasSheep = obs.trick.some(t => t.card === SHEEP);
     const trickHasPenalty = obs.trick.some(t => t.card === PIG || isHeart(t.card));
     const isLastToPlay = obs.trick.length === 3;
@@ -87,7 +86,7 @@ const POLICIES = {
   random: randomPolicy,
   lowest: () => lowestPolicy,
   avoidPoints: () => avoidPointsPolicy,
-  cardCounter: name => cardCounterPolicy(name),
+  cardCounter: cardCounterPolicy,
 };
 
 /**
@@ -122,5 +121,4 @@ module.exports = {
   randomPolicy,
   lowestPolicy,
   avoidPointsPolicy,
-  cardCounterPolicy,
 };

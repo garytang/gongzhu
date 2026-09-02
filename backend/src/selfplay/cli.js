@@ -7,7 +7,7 @@ const path = require('path');
 const { runParallelBatch } = require('./parallel');
 const { runTournament, formatTable } = require('./tournament');
 const { buildMeta } = require('./meta');
-const { DEFAULT_POLICIES } = require('./runner');
+const { DEFAULT_POLICIES, TEAMS } = require('./runner');
 
 const COMMANDS = ['batch', 'tournament'];
 
@@ -79,14 +79,8 @@ common
                      (repeatable; also passed to worker threads)
 `;
 
-function engineOptions(args) {
-  const options = { variant: args.variant };
-  if (args.teams) options.teams = { team1: ['p0', 'p2'], team2: ['p1', 'p3'] };
-  return options;
-}
-
 async function runBatchCommand(args) {
-  const options = engineOptions(args);
+  const options = args.teams ? { variant: args.variant, teams: TEAMS } : { variant: args.variant };
   const policyNames = args.policies || DEFAULT_POLICIES;
   const meta = buildMeta({ options, policyNames, seedPrefix: args.seed });
 

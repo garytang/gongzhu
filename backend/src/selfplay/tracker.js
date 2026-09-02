@@ -1,8 +1,7 @@
 'use strict';
 
-const { SUITS, RANKS, suitOf, rankValue } = require('../engine/cards');
-
-const SEATS = 4;
+const { RANKS, suitOf, rankValue } = require('../engine/cards');
+const { SEATS } = require('../engine/game');
 
 /**
  * Reconstructs the full trick history of a hand from the observations one player
@@ -20,7 +19,6 @@ const SEATS = 4;
  */
 class HandTracker {
   constructor() {
-    this.handNumber = null;
     this.reset(null, []);
   }
 
@@ -93,4 +91,4 @@ class HandTracker {
   }
 }
 
-module.exports = { HandTracker, SUITS };
+module.exports = { HandTracker };

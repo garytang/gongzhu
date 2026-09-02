@@ -7,8 +7,7 @@ const { expect } = require('chai');
 
 const { runParallelBatch, partitionRange } = require('../../src/selfplay/parallel');
 const { buildMeta, SCHEMA_VERSION } = require('../../src/selfplay/meta');
-
-const TEAMS = { team1: ['p0', 'p2'], team2: ['p1', 'p3'] };
+const { TEAMS } = require('../../src/selfplay/runner');
 
 describe('self-play: dataset provenance', () => {
   it('stamps the rules configuration, schema version and git sha', () => {

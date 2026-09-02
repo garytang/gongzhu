@@ -2,11 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { pipeline } = require('stream/promises');
 const { Worker } = require('worker_threads');
 
 const { runBatchRange, mergeStats } = require('./runner');
 const { headerRecord } = require('./meta');
+const { openJsonl, appendFile } = require('./jsonl');
 
 const WORKER_ENTRY = path.join(__dirname, 'worker.js');
 
@@ -48,15 +48,12 @@ function runWorker(workerData) {
 }
 
 async function concatShards(outPath, meta, shardPaths) {
-  fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
-  const out = fs.createWriteStream(outPath, { flags: 'w' });
-  out.setMaxListeners(shardPaths.length + 10); // one pipeline per shard, all on this stream
-  out.write(`${JSON.stringify(headerRecord(meta))}\n`);
+  const sink = openJsonl(outPath, headerRecord(meta));
   for (const shard of shardPaths) {
     // eslint-disable-next-line no-await-in-loop -- shards must land in range order
-    await pipeline(fs.createReadStream(shard), out, { end: false });
+    await appendFile(sink, shard);
   }
-  await new Promise((resolve, reject) => out.end(err => (err ? reject(err) : resolve())));
+  await sink.close();
   for (const shard of shardPaths) fs.rmSync(shard, { force: true });
 }
 
@@ -66,7 +63,8 @@ async function concatShards(outPath, meta, shardPaths) {
  * concatenated in ascending match order.
  *
  * Externally registered policies (`registerPolicy`) do not exist in a fresh worker;
- * pass their module paths as `preload` so each worker registers them before playing.
+ * `preload` names the modules that register them, and is required in-process too so
+ * the flag means the same thing at every worker count.
  */
 async function runParallelBatch({
   games = 100,
@@ -78,18 +76,13 @@ async function runParallelBatch({
   meta,
   preload = [],
 } = {}) {
-  const datasetId = meta ? meta.datasetId : undefined;
+  const datasetId = meta && meta.datasetId;
   const ranges = partitionRange(games, workers);
 
-  // One worker is not worth the thread: run in-process, where policies registered by
-  // the caller are still available.
+  // One worker is not worth the thread: run the whole range here.
   if (ranges.length <= 1) {
-    let stream = null;
-    if (out) {
-      fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
-      stream = fs.createWriteStream(out, { flags: 'w' });
-      stream.write(`${JSON.stringify(headerRecord(meta))}\n`);
-    }
+    for (const modulePath of preload) require(modulePath);
+    const sink = out ? openJsonl(out, headerRecord(meta)) : null;
     const stats = await runBatchRange({
       from: 0,
       to: games,
@@ -97,15 +90,13 @@ async function runParallelBatch({
       policyNames,
       options,
       datasetId,
-      onRecord: stream ? record => stream.write(`${JSON.stringify(record)}\n`) : undefined,
+      onRecord: sink ? sink.write : undefined,
     });
-    if (stream) await new Promise((resolve, reject) => stream.end(err => (err ? reject(err) : resolve())));
+    if (sink) await sink.close();
     return { ...stats, workers: 1 };
   }
 
   const shardPaths = out ? ranges.map((_, i) => `${out}.part-${i}`) : [];
-  if (out) fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
-
   try {
     const parts = await Promise.all(ranges.map((range, i) => runWorker({
       ...range,
