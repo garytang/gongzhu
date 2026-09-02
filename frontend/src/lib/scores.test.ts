@@ -1,5 +1,5 @@
 import type { GameState } from '../PlayerContext';
-import { displayTeamScores, roundTeamScores, teamOf } from './scores';
+import { displayTeamScores, roundTeamScores, sumTeamScore, teamMembers, teamOf } from './scores';
 
 const seats = [
   { handle: 'Ann', playerId: 'p0' },
@@ -59,5 +59,46 @@ describe('teamOf', () => {
 
   it('returns 0 for an unknown player', () => {
     expect(teamOf(state(), 'nobody')).toBe(0);
+  });
+});
+
+describe('teamMembers', () => {
+  it('reads the server team assignments', () => {
+    expect(teamMembers(state())).toEqual([['p0', 'p2'], ['p1', 'p3']]);
+  });
+
+  it('pairs the seats it has when the table is not yet full', () => {
+    const partial = state({ teams: undefined, playerHandles: seats.slice(0, 3) });
+    expect(teamMembers(partial)).toEqual([['p0', 'p2'], ['p1']]);
+  });
+
+  it('returns empty teams when there is no state at all', () => {
+    expect(teamMembers(null)).toEqual([[], []]);
+  });
+});
+
+describe('sumTeamScore', () => {
+  it('counts a player the score map omits as zero', () => {
+    expect(sumTeamScore({ p0: -40 }, ['p0', 'p2'])).toBe(-40);
+  });
+
+  it('is zero for a team with no members', () => {
+    expect(sumTeamScore({ p0: -40 }, [])).toBe(0);
+  });
+});
+
+describe('scores with no state', () => {
+  it('totals nothing when the server has sent no teams and no seats', () => {
+    const empty = state({ teams: undefined, playerHandles: [], scores: {} });
+    expect(roundTeamScores(empty)).toEqual({ team1: 0, team2: 0 });
+    expect(displayTeamScores(empty)).toEqual({ team1: 0, team2: 0 });
+  });
+
+  it('has no team for a player when there is no state', () => {
+    expect(teamOf(null, 'p0')).toBe(0);
+  });
+
+  it('has no team for a seat that is still empty', () => {
+    expect(teamOf(state(), undefined)).toBe(0);
   });
 });
