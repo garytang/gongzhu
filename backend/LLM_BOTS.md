@@ -1,298 +1,114 @@
-# LLM Bot Players for Gongzhu
+# LLM bot players
 
-This document describes the LLM-powered bot players that can be integrated into the Gongzhu card game.
+A seat at the table can be played by an LLM. The bot is given an **observation** — the
+same information a human in that seat has — and asked for one card.
 
-## Overview
+## How it fits together
 
-The LLM bot system extends the existing bot player functionality with AI-powered decision making using Large Language Models. The system supports multiple LLM providers and includes intelligent fallback mechanisms.
+| File | Role |
+| --- | --- |
+| `src/bots/observation.js` | Builds an engine-shaped observation, including from the legacy `game` object |
+| `src/bots/prompt.js` | Renders an observation as the prompt for one move |
+| `src/bots/llm-policy.js` | `createLLMPolicy(config)` → `{ name, choose(observation, ctx) }` |
+| `src/bots/providers.js` | HTTP clients for Anthropic, Google and OpenRouter |
+| `llm-bot-player.js` | `LLMBotPlayer`, the adapter the Socket.IO server calls |
 
-## Features
+Bots see only what `engine.observation(match, playerId)` exposes: their own hand, the
+legal moves, the cards on the table, the point cards each player has collected, how many
+cards each player has left, the running scores, who their teammate is, exposed cards and
+the scoring variant. No other player's hand ever reaches a provider.
 
-- **Multiple LLM Providers**: Anthropic Claude, Google Gemini, OpenRouter
-- **Intelligent Game Analysis**: Considers current hand, trick state, collected cards, team dynamics
-- **Robust Fallback**: Falls back to enhanced rule-based AI if LLM fails
-- **Game Memory**: Tracks played cards and player tendencies
-- **Strategic Decision Making**: Implements various strategies based on game state
+The legacy `game` object that `index.js` passes to bots *does* contain every hand.
+`observationFromLegacy` reads only the public fields from it, so that leak is structurally
+closed rather than merely unused.
+
+## Models
+
+Defaults are the cheap, fast option in each family — a Gongzhu move is a small decision
+made 52 times a hand, so per-move cost and latency dominate. Override with the environment
+variable, or per bot with `llmConfig.model`.
+
+| Provider | Env var | Default (fast, cheap) | Stronger |
+| --- | --- | --- | --- |
+| Anthropic | `ANTHROPIC_MODEL` | `claude-haiku-4-5` | `claude-sonnet-5`, then `claude-opus-5` |
+| Google | `GOOGLE_MODEL` | `gemini-3.5-flash-lite` | `gemini-3.7-flash` |
+| OpenRouter | `OPENROUTER_MODEL` | `anthropic/claude-haiku-4.5` | `anthropic/claude-sonnet-5` |
+
+Retired model IDs that used to appear here and in deployment config — `claude-3-5-haiku-*`
+(retired 2026-02-19), `claude-3-haiku-*` (retired 2026-04-20) and `gemini-1.5-*` — no
+longer resolve. A request naming one fails, and the bot silently plays the heuristic
+fallback for every move.
+
+`temperature` is not sent to Anthropic: Claude 4.7 and later reject a non-default value
+with a 400.
 
 ## Configuration
 
-### Environment Variables
+```bash
+ANTHROPIC_API_KEY=...      # or GOOGLE_API_KEY / OPENROUTER_API_KEY
+ANTHROPIC_MODEL=claude-haiku-4-5
+LLM_BOT_DEBUG=1            # log each prompt, raw response and parsed reasoning
+```
 
-Create a `.env` file in the backend directory with your API keys:
+Keys: [Anthropic Console](https://console.anthropic.com/),
+[Google AI Studio](https://aistudio.google.com/apikey),
+[OpenRouter](https://openrouter.ai/keys).
+
+## One move
+
+1. `LLMBotPlayer.selectCard(hand, trick, gameState)` resolves an observation —
+   `gameState.observation` when the server supplies one, otherwise reconstructed from the
+   legacy fields.
+2. If exactly one move is legal it is played without calling the model at all.
+3. `buildPrompt` renders the observation. The prompt is capped at 8,000 characters.
+4. The provider is called with a deadline (5s by default, `llmConfig.timeoutMs`). A
+   provider that hangs loses its turn rather than stalling the table.
+5. The reply is parsed for `<played_card>`, falling back to scanning the whole response
+   for a card named in `legalMoves`.
+6. Anything short of a legal card — timeout, HTTP error, garbage, an illegal card — falls
+   through to a fallback policy: `avoidPoints` from `src/selfplay/policies.js` by default,
+   or any policy passed as `llmConfig.fallback`.
+
+Expected reply:
+
+```xml
+<reasoning>one or two sentences</reasoning>
+<played_card>A♠</played_card>
+```
+
+## As a self-play policy
+
+`createLLMPolicy` returns the `Policy` shape used by `src/selfplay/`, so an LLM can be
+evaluated head-to-head against the heuristics:
+
+```javascript
+const { createLLMPolicy } = require('./src/bots/llm-policy');
+
+const policy = createLLMPolicy({ provider: 'anthropic', model: 'claude-haiku-4-5' });
+const card = await policy.choose(engine.observation(match, playerId));
+```
+
+`choose` is **async**, unlike the synchronous heuristic policies. A runner must `await` it.
+
+## HTTP API
 
 ```bash
-# Anthropic Claude API
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-# Optional: Specify model (default: claude-3-5-haiku-20241022)
-ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
-
-# Google Gemini API  
-GOOGLE_API_KEY=your_google_api_key_here
-# Optional: Specify model (default: gemini-1.5-flash)
-GOOGLE_MODEL=gemini-1.5-pro
-
-# OpenRouter API (supports multiple models)
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-# Optional: Specify model (default: anthropic/claude-3-haiku)
-OPENROUTER_MODEL=anthropic/claude-3-5-sonnet
-```
-
-### API Key Sources
-
-- **Anthropic**: Get from [Anthropic Console](https://console.anthropic.com/)
-- **Google**: Get from [Google AI Studio](https://makersuite.google.com/app/apikey)
-- **OpenRouter**: Get from [OpenRouter](https://openrouter.ai/keys)
-
-### Model Configuration
-
-You can customize which models to use by setting environment variables. If not specified, sensible defaults are used:
-
-**Anthropic Models:**
-- `claude-3-5-haiku-20241022` (default) - Fast, cost-effective
-- `claude-3-5-sonnet-20241022` - Balanced performance and capability
-- `claude-3-opus-20240229` - Most capable, slower and more expensive
-
-**Google Models:**
-- `gemini-1.5-flash` (default) - Fast and efficient
-- `gemini-1.5-pro` - More capable, slower
-
-**OpenRouter Models:**
-- `anthropic/claude-3-haiku` (default) - Fast Claude via OpenRouter
-- `anthropic/claude-3-5-sonnet` - Better Claude via OpenRouter
-- Many other models available through OpenRouter
-
-## Usage
-
-### API Endpoints
-
-#### Create LLM Bot
-
-```bash
-POST /api/bots/create
-Content-Type: application/json
-
-{
-  "type": "llm",
-  "llmConfig": {
-    "handle": "Claude Bot",
-    "provider": "anthropic",
-    "model": "claude-3-haiku-20240307",
-    "apiKey": "your_api_key_here",
-    "fallbackDifficulty": "hard"
-  }
-}
-```
-
-#### Create Bot with Different Providers
-
-**Anthropic Claude:**
-```json
-{
-  "type": "llm",
-  "llmConfig": {
-    "handle": "Claude Pro",
-    "provider": "anthropic",
-    "model": "claude-3-sonnet-20240229"
-  }
-}
-```
-
-**Google Gemini:**
-```json
-{
-  "type": "llm", 
-  "llmConfig": {
-    "handle": "Gemini Bot",
-    "provider": "google",
-    "model": "gemini-1.5-pro"
-  }
-}
-```
-
-**OpenRouter (Multiple Models):**
-```json
-{
-  "type": "llm",
-  "llmConfig": {
-    "handle": "OpenRouter Bot",
-    "provider": "openrouter", 
-    "model": "anthropic/claude-3-haiku"
-  }
-}
-```
-
-#### List All Bots
-
-```bash
-GET /api/bots/list
-```
-
-Response:
-```json
-{
-  "success": true,
-  "bots": [
-    {
-      "id": "llm_bot_1234567890_0",
-      "handle": "Claude Bot",
-      "type": "llm",
-      "provider": "anthropic",
-      "model": "claude-3-haiku-20240307"
-    }
-  ]
-}
-```
-
-#### Clear All Bots
-
-```bash
+POST /api/bots/create   {"type":"llm","llmConfig":{"handle":"Claude Bot","provider":"anthropic"}}
+GET  /api/bots/list
 DELETE /api/bots/clear
 ```
 
-### Programmatic Usage
-
-```javascript
-const { LLMBotPlayer } = require('./llm-bot-player');
-
-// Create an LLM bot
-const bot = new LLMBotPlayer('bot1', {
-  handle: 'Smart Bot',
-  provider: 'anthropic',
-  model: 'claude-3-haiku-20240307',
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  fallbackDifficulty: 'hard'
-});
-
-// Use in game (returns a Promise)
-const selectedCard = await bot.selectCard(hand, trick, gameState);
-```
-
-## LLM Providers
-
-### Anthropic Claude
-
-- **Models**: `claude-3-haiku-20240307`, `claude-3-sonnet-20240229`, `claude-3-opus-20240229`
-- **Strengths**: Excellent reasoning, strategic thinking
-- **Cost**: Moderate to high
-- **Speed**: Fast (Haiku) to slower (Opus)
-
-### Google Gemini
-
-- **Models**: `gemini-1.5-flash`, `gemini-1.5-pro`
-- **Strengths**: Good general performance, competitive pricing
-- **Cost**: Low to moderate
-- **Speed**: Very fast (Flash) to moderate (Pro)
-
-### OpenRouter
-
-- **Models**: Supports many models including Claude, GPT, Llama, etc.
-- **Strengths**: Model variety, competitive pricing
-- **Cost**: Varies by model
-- **Speed**: Varies by model
-
-## Bot Behavior
-
-### LLM Response Format
-
-The LLM is prompted to respond in a structured XML format:
-
-```xml
-<reasoning>
-Strategic analysis of the current situation, explaining card choice
-</reasoning>
-
-<played_card>
-A♠
-</played_card>
-```
-
-**Benefits**:
-- **Transparency**: Reasoning is logged to console for game analysis
-- **Reliability**: Structured parsing improves card extraction accuracy
-- **Debugging**: Clear separation of thinking and action
-
-### Decision Making Process
-
-1. **LLM Analysis**: Analyzes current game state and generates strategic response with reasoning
-2. **Response Parsing**: Extracts reasoning and card choice from XML-formatted response
-3. **Reasoning Logging**: Logs the LLM's strategic thinking to console for transparency
-4. **Validation**: Ensures selected card is valid according to game rules
-5. **Fallback**: Uses enhanced rule-based AI if LLM fails
-
-### Strategic Considerations
-
-The LLM bot considers:
-
-- **Current Hand**: Available cards and their strategic value
-- **Trick State**: Cards already played, who led, position in trick
-- **Collected Cards**: Point cards collected by each player
-- **Team Dynamics**: Teammate's position and needs
-- **Game Rules**: Suit following, scoring system, special cards
-- **Risk Assessment**: Probability of taking penalty cards
-
-### Fallback Strategies
-
-If LLM fails, the bot uses enhanced rule-based strategies:
-
-- **Lead Safe**: Start with non-penalty cards
-- **Avoid Penalty**: Don't take hearts or Queen of Spades
-- **Win Jack**: Try to capture Jack of Diamonds for bonus
-- **Support Teammate**: Help teammate avoid penalties
-- **Dump Penalty**: Safely discard penalty cards
+`/api/bots/list` reports the resolved provider and model per bot. `llmConfig` accepts
+`handle`, `provider`, `model`, `apiKey` and `timeoutMs`. The old `fallbackDifficulty` key
+is accepted and ignored — the fallback is a policy now, not a difficulty tier.
 
 ## Testing
-
-Run the LLM bot tests:
 
 ```bash
 npm run test:llm
 ```
 
-Run all tests:
-
-```bash
-npm run test:all
-```
-
-## Integration
-
-The LLM bots integrate seamlessly with the existing game system:
-
-- **Socket.IO Compatibility**: Works with existing real-time game flow
-- **Player Management**: Treated identically to human players in game state
-- **Turn Handling**: Automatic turn processing with configurable delays
-- **Error Handling**: Graceful degradation to rule-based play
-
-## Performance Considerations
-
-- **API Latency**: LLM calls add 1-8 seconds per decision
-- **Rate Limits**: Respect provider rate limits
-- **Cost**: Monitor API usage costs
-- **Reliability**: Always have fallback mechanisms
-
-## Troubleshooting
-
-### Common Issues
-
-1. **API Key Not Working**: Check key validity and environment variables
-2. **Slow Response**: Some models are slower, adjust timeout settings
-3. **Invalid Card Selection**: Parser may fail, relies on fallback
-4. **Rate Limiting**: Implement retry logic or reduce request frequency
-
-### Debugging
-
-Enable detailed logging:
-
-```javascript
-console.log(`LLM Bot ${bot.handle} decision: ${response}`);
-```
-
-Check API responses and parsing logic in the bot implementation.
-
-## Future Enhancements
-
-- **Learning System**: Remember successful strategies
-- **Opponent Modeling**: Track opponent playing patterns
-- **Advanced Prompting**: Improve prompt engineering for better decisions
-- **Multi-Round Strategy**: Consider long-term team strategy
-- **Custom Models**: Support for self-hosted models
+Tests inject a stub provider — an object with `generateResponse(prompt, options)` — into
+`llmConfig.provider`, so the suite needs no API key and makes no network calls. The same
+hook is the way to script provider behaviour (valid card, illegal card, garbage, throw,
+hang) in any new test.

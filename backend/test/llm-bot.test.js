@@ -1,241 +1,370 @@
+'use strict';
+
 const { expect } = require('chai');
 const { LLMBotPlayer } = require('../llm-bot-player');
-const { createLLMProvider } = require('../llm-providers');
+const { createLLMPolicy, parseCard, extractTag } = require('../src/bots/llm-policy');
+const { buildPrompt, MAX_PROMPT_CHARS } = require('../src/bots/prompt');
+const {
+  legalMovesFor,
+  observationFromLegacy,
+  toObservation,
+  namesFromGameState,
+} = require('../src/bots/observation');
+const { createLLMProvider, DEFAULT_MODELS } = require('../src/bots/providers');
 
-describe('LLM Bot Player', function() {
-  let mockGameState, mockHand, mockTrick;
-  
-  beforeEach(function() {
-    mockGameState = {
-      playerOrder: ['player1', 'player2', 'player3', 'player4'],
-      playerHandles: [
-        { playerId: 'player1', handle: 'Alice' },
-        { playerId: 'player2', handle: 'Bob' },
-        { playerId: 'player3', handle: 'Charlie' },
-        { playerId: 'player4', handle: 'Diana' }
-      ],
-      scores: { player1: 0, player2: 0, player3: 0, player4: 0 },
-      teams: {
-        team1: ['player1', 'player3'],
-        team2: ['player2', 'player4']
-      },
-      turn: 0,
-      collected: {
-        player1: [],
-        player2: [],
-        player3: [],
-        player4: []
-      }
+/**
+ * A provider stub. Every test drives the bot through one of these, so the suite never
+ * touches the network and never needs an API key.
+ */
+function stubProvider(behaviour) {
+  const calls = [];
+  return {
+    calls,
+    model: 'stub-model',
+    async generateResponse(prompt) {
+      calls.push(prompt);
+      if (typeof behaviour === 'function') return behaviour(prompt);
+      return behaviour;
+    },
+  };
+}
+
+const HAND = ['A♠', '5♥', '7♣', 'J♦', 'Q♠'];
+
+function legacyGameState(overrides = {}) {
+  return {
+    playerOrder: ['p1', 'p2', 'p3', 'p4'],
+    playerHandles: [
+      { playerId: 'p1', handle: 'Alice' },
+      { playerId: 'p2', handle: 'Bob' },
+      { playerId: 'p3', handle: 'Charlie' },
+      { playerId: 'p4', handle: 'Diana' },
+    ],
+    scores: { p1: 0, p2: -30, p3: 0, p4: 100 },
+    teams: { team1: ['p1', 'p3'], team2: ['p2', 'p4'] },
+    cumulativeTeamScores: { team1: 0, team2: 70 },
+    turn: 0,
+    trick: [],
+    collected: { p1: [], p2: ['3♥', '5♥'], p3: [], p4: ['J♦', '2♣'] },
+    // The legacy server hands bots the whole game object, every hand included. Nothing
+    // downstream may read this.
+    hands: { p1: HAND, p2: ['2♠'], p3: ['3♠'], p4: ['4♠'] },
+    ...overrides,
+  };
+}
+
+describe('bot observation', function () {
+  it('restricts legal moves to the led suit when the player can follow', function () {
+    expect(legalMovesFor(HAND, [{ player: 'p2', card: '2♠' }])).to.deep.equal(['A♠', 'Q♠']);
+  });
+
+  it('allows any card when the player is void in the led suit', function () {
+    const hand = ['5♥', '7♣', 'J♦'];
+    expect(legalMovesFor(hand, [{ player: 'p2', card: '2♠' }])).to.deep.equal(hand);
+  });
+
+  it('allows any card when leading', function () {
+    expect(legalMovesFor(HAND, [])).to.deep.equal(HAND);
+  });
+
+  it('derives an observation that never carries another player\'s hand', function () {
+    const obs = observationFromLegacy(HAND, [], legacyGameState());
+    expect(obs).to.not.have.property('hands');
+    expect(JSON.stringify(obs)).to.not.include('2♠');
+  });
+
+  it('reads identity, teammate and scores from the legacy game object', function () {
+    const obs = observationFromLegacy(HAND, [], legacyGameState({ turn: 1 }));
+    expect(obs.playerId).to.equal('p2');
+    expect(obs.teammate).to.equal('p4');
+    expect(obs.totals.p4).to.equal(100);
+    expect(obs.teamTotals).to.deep.equal({ team1: 0, team2: 70 });
+  });
+
+  it('infers cards remaining from who has already played to the trick', function () {
+    const trick = [{ player: 'p3', card: '2♠' }, { player: 'p4', card: '3♠' }];
+    const obs = observationFromLegacy(HAND, trick, legacyGameState({ turn: 0 }));
+    expect(obs.handCounts).to.deep.equal({ p1: 5, p2: 5, p3: 4, p4: 4 });
+    expect(obs.leader).to.equal('p3');
+    expect(obs.trickNumber).to.equal(9);
+  });
+
+  it('prefers a supplied engine observation over the legacy fields', function () {
+    const supplied = { playerId: 'seat-2', hand: ['9♦'], legalMoves: ['9♦'], trick: [] };
+    const obs = toObservation(HAND, [], { ...legacyGameState(), observation: supplied });
+    expect(obs.playerId).to.equal('seat-2');
+    expect(obs.legalMoves).to.deep.equal(['9♦']);
+  });
+
+  it('fills in legal moves when a supplied observation omits them', function () {
+    const supplied = { playerId: 'p1', hand: HAND, trick: [{ player: 'p2', card: '2♠' }] };
+    const obs = toObservation(HAND, [], { observation: supplied });
+    expect(obs.legalMoves).to.deep.equal(['A♠', 'Q♠']);
+  });
+
+  it('keeps an empty legal move list, which the engine uses for "not your turn"', function () {
+    const supplied = { playerId: 'p1', hand: HAND, legalMoves: [], trick: [] };
+    expect(toObservation(HAND, [], { observation: supplied }).legalMoves).to.deep.equal([]);
+  });
+
+  it('maps player ids to handles', function () {
+    expect(namesFromGameState(legacyGameState()).p3).to.equal('Charlie');
+  });
+});
+
+describe('bot prompt', function () {
+  const observation = observationFromLegacy(HAND, [{ player: 'p4', card: '2♠' }], legacyGameState());
+  const prompt = buildPrompt(observation, namesFromGameState(legacyGameState()));
+
+  it('shows the player their own hand and legal plays', function () {
+    expect(prompt).to.include('A♠, 5♥, 7♣, J♦, Q♠');
+    expect(prompt).to.include('LEGAL PLAYS');
+    expect(prompt).to.include('A♠, Q♠');
+  });
+
+  it('names teammate, opponents and point cards taken', function () {
+    expect(prompt).to.include('Your teammate: Charlie');
+    expect(prompt).to.include('Bob: 3♥, 5♥');
+    expect(prompt).to.include('Diana: J♦');
+  });
+
+  it('omits non-point cards other players have collected', function () {
+    expect(prompt).to.not.include('2♣');
+  });
+
+  it('quotes heart values for the variant in play', function () {
+    const pips = buildPrompt({ ...observation, variant: 'pips' }, {});
+    expect(prompt).to.include('4♥ 0');
+    expect(pips).to.include('4♥ -10');
+  });
+
+  it('caps its own length but keeps the response instructions', function () {
+    const bloated = {
+      ...observation,
+      hand: Array.from({ length: 4000 }, (_, i) => `card${i}`),
     };
-    
-    mockHand = ['A♠', '5♥', '7♣', 'J♦', 'Q♠'];
-    mockTrick = [];
+    const capped = buildPrompt(bloated, {});
+    expect(capped.length).to.be.at.most(MAX_PROMPT_CHARS);
+    expect(capped).to.include('<played_card>');
+  });
+});
+
+describe('LLM policy', function () {
+  const observation = observationFromLegacy(HAND, [{ player: 'p4', card: '2♠' }], legacyGameState());
+
+  const answer = card => `<reasoning>because</reasoning><played_card>${card}</played_card>`;
+
+  it('plays the card the model names', async function () {
+    const policy = createLLMPolicy({ provider: stubProvider(answer('Q♠')) });
+    expect(await policy.choose(observation)).to.equal('Q♠');
   });
 
-  describe('Bot Creation', function() {
-    it('should create a bot with default configuration', function() {
-      const bot = new LLMBotPlayer('test1');
-      expect(bot.id).to.equal('test1');
-      expect(bot.handle).to.include('AI');
-      expect(bot.socketId).to.include('llm_bot_');
-      expect(bot.llmProvider).to.equal('anthropic');
-    });
-
-    it('should create a bot with custom configuration', function() {
-      const config = {
-        handle: 'SmartBot',
-        provider: 'google',
-        model: 'gemini-pro',
-        fallbackDifficulty: 'hard'
-      };
-      
-      const bot = new LLMBotPlayer('test2', config);
-      expect(bot.handle).to.equal('SmartBot');
-      expect(bot.llmProvider).to.equal('google');
-      expect(bot.llmModel).to.equal('gemini-pro');
-      expect(bot.fallbackDifficulty).to.equal('hard');
-    });
+  it('accepts a card named in prose when the tag is missing', async function () {
+    const policy = createLLMPolicy({ provider: stubProvider('I will play the A♠ here.') });
+    expect(await policy.choose(observation)).to.equal('A♠');
   });
 
-  describe('Card Validation', function() {
-    it('should return all cards when leading', function() {
-      const bot = new LLMBotPlayer('test3');
-      const validCards = bot.getValidCards(mockHand, []);
-      expect(validCards).to.deep.equal(mockHand);
-    });
-
-    it('should return suit cards when following suit', function() {
-      const bot = new LLMBotPlayer('test4');
-      const trickWithSpades = [{ player: 'player1', card: '2♠' }];
-      const validCards = bot.getValidCards(mockHand, trickWithSpades);
-      expect(validCards).to.deep.equal(['A♠', 'Q♠']);
-    });
-
-    it('should return all cards when cannot follow suit', function() {
-      const bot = new LLMBotPlayer('test5');
-      const handWithoutSpades = ['5♥', '7♣', 'J♦', '10♣'];
-      const trickWithSpades = [{ player: 'player1', card: '2♠' }];
-      const validCards = bot.getValidCards(handWithoutSpades, trickWithSpades);
-      expect(validCards).to.deep.equal(handWithoutSpades);
-    });
+  it('falls back when the model names an illegal card', async function () {
+    const policy = createLLMPolicy({ provider: stubProvider(answer('J♦')) });
+    const card = await policy.choose(observation);
+    expect(observation.legalMoves).to.include(card);
+    expect(card).to.not.equal('J♦');
   });
 
-  describe('Rule-based Fallback', function() {
-    it('should select a valid card using rules', function() {
-      const bot = new LLMBotPlayer('test6');
-      const validCards = ['A♠', '5♥', '7♣'];
-      const result = bot.selectCardWithRules(validCards, mockTrick, mockGameState);
-      expect(validCards).to.include(result);
-    });
-
-    it('should avoid penalty cards when possible', function() {
-      const bot = new LLMBotPlayer('test7');
-      const validCards = ['Q♠', '7♣', '5♥'];
-      const result = bot.selectCardWithRules(validCards, mockTrick, mockGameState);
-      // Should prefer non-penalty cards
-      expect(['7♣', '5♥']).to.include(result);
-    });
+  it('falls back on garbage output', async function () {
+    const policy = createLLMPolicy({ provider: stubProvider('{"nope": true}') });
+    expect(observation.legalMoves).to.include(await policy.choose(observation));
   });
 
-  describe('Response Parsing', function() {
-    it('should parse XML-formatted responses', function() {
-      const bot = new LLMBotPlayer('test8');
-      const validCards = ['A♠', '5♥', 'J♦'];
-      const response = `<reasoning>
-I should lead with a safe card to avoid taking penalty cards.
-</reasoning>
-
-<played_card>A♠</played_card>`;
-      const result = bot.parseCardFromResponse(response, validCards);
-      expect(result).to.equal('A♠');
+  it('falls back when the provider throws', async function () {
+    const policy = createLLMPolicy({
+      provider: { async generateResponse() { throw new Error('502 upstream'); } },
     });
-
-    it('should parse cards from played_card tag', function() {
-      const bot = new LLMBotPlayer('test9');
-      const validCards = ['A♠', '5♥', 'J♦'];
-      const response = `<reasoning>Playing for bonus points</reasoning>
-<played_card>J♦</played_card>`;
-      const result = bot.parseCardFromResponse(response, validCards);
-      expect(result).to.equal('J♦');
-    });
-
-    it('should fallback to parsing entire response', function() {
-      const bot = new LLMBotPlayer('test10');
-      const validCards = ['A♠', '5♥', 'J♦'];
-      const response = 'I choose A♠ to lead safely.';
-      const result = bot.parseCardFromResponse(response, validCards);
-      expect(result).to.equal('A♠');
-    });
-
-    it('should return null for invalid responses', function() {
-      const bot = new LLMBotPlayer('test11');
-      const validCards = ['A♠', '5♥', 'J♦'];
-      const response = '<reasoning>I cannot decide</reasoning><played_card>Invalid</played_card>';
-      const result = bot.parseCardFromResponse(response, validCards);
-      expect(result).to.be.null;
-    });
-
-    it('should extract XML content correctly', function() {
-      const bot = new LLMBotPlayer('test12');
-      const text = '<reasoning>This is my thinking</reasoning>';
-      const result = bot.extractXMLContent(text, 'reasoning');
-      expect(result).to.equal('This is my thinking');
-    });
-
-    it('should handle malformed XML gracefully', function() {
-      const bot = new LLMBotPlayer('test13');
-      const text = '<reasoning>Missing closing tag';
-      const result = bot.extractXMLContent(text, 'reasoning');
-      expect(result).to.be.null;
-    });
+    expect(observation.legalMoves).to.include(await policy.choose(observation));
   });
 
-  describe('Game Memory', function() {
-    it('should update played cards memory', function() {
-      const bot = new LLMBotPlayer('test14');
-      const trick = [{ player: 'player1', card: 'A♠' }];
-      bot.updateGameMemory(trick, mockGameState);
-      expect(bot.gameMemory.playedCards.has('A♠')).to.be.true;
+  it('gives up on a provider that never answers', async function () {
+    const policy = createLLMPolicy({
+      provider: { generateResponse: () => new Promise(() => {}) },
+      timeoutMs: 30,
     });
-
-    it('should track key remaining cards', function() {
-      const bot = new LLMBotPlayer('test15');
-      bot.gameMemory.playedCards.add('A♠');
-      bot.gameMemory.playedCards.add('Q♠');
-      const remaining = bot.getKeyRemainingCards();
-      expect(remaining).to.not.include('A♠');
-      expect(remaining).to.not.include('Q♠');
-      expect(remaining).to.include('J♦');
-    });
+    const started = Date.now();
+    expect(observation.legalMoves).to.include(await policy.choose(observation));
+    expect(Date.now() - started).to.be.below(2000);
   });
 
-  describe('Strategy Detection', function() {
-    it('should detect leading strategy', function() {
-      const bot = new LLMBotPlayer('test16');
-      const strategy = bot.determineStrategy([], mockGameState);
-      expect(strategy).to.equal('lead_safe');
-    });
-
-    it('should detect Jack of Diamonds win opportunity', function() {
-      const bot = new LLMBotPlayer('test17');
-      const trick = [
-        { player: 'player1', card: 'A♠' },
-        { player: 'player2', card: 'J♦' },
-        { player: 'player3', card: '5♠' }
-      ];
-      const strategy = bot.determineStrategy(trick, mockGameState);
-      expect(strategy).to.equal('win_jack');
-    });
+  it('skips the model entirely when only one card is legal', async function () {
+    const provider = stubProvider(answer('A♠'));
+    const policy = createLLMPolicy({ provider });
+    const forced = { ...observation, legalMoves: ['Q♠'] };
+    expect(await policy.choose(forced)).to.equal('Q♠');
+    expect(provider.calls).to.have.length(0);
   });
 
-  describe('Async Card Selection', function() {
-    it('should handle async selection with fallback', async function() {
-      this.timeout(5000); // Increase timeout for async operations
-      
-      const bot = new LLMBotPlayer('test18', {
-        provider: 'anthropic',
-        // No API key provided, should fallback
-      });
-      
-      const result = await bot.selectCard(mockHand, mockTrick, mockGameState);
-      expect(mockHand).to.include(result);
-    });
+  it('refuses to choose when no move is legal', async function () {
+    const policy = createLLMPolicy({ provider: stubProvider('x') });
+    let thrown = null;
+    await policy.choose({ ...observation, legalMoves: [] }).catch(error => { thrown = error; });
+    expect(thrown).to.be.an('error');
   });
 
-  describe('Utility Functions', function() {
-    it('should detect card suits correctly', function() {
-      const bot = new LLMBotPlayer('test19');
-      expect(bot.getSuit('A♠')).to.equal('♠');
-      expect(bot.getSuit('5♥')).to.equal('♥');
-      expect(bot.getSuit('J♦')).to.equal('♦');
-      expect(bot.getSuit('10♣')).to.equal('♣');
+  it('uses the fallback policy it was given', async function () {
+    const policy = createLLMPolicy({
+      provider: stubProvider('nothing useful'),
+      fallback: { name: 'always-first', choose: obs => obs.legalMoves[0] },
+    });
+    expect(await policy.choose(observation)).to.equal(observation.legalMoves[0]);
+  });
+
+  it('does not call a provider that has no API key', async function () {
+    const provider = { ...stubProvider('x'), apiKey: '' };
+    const policy = createLLMPolicy({ provider });
+    expect(observation.legalMoves).to.include(await policy.choose(observation));
+    expect(provider.calls).to.have.length(0);
+  });
+
+  it('reports a name and the model in use', function () {
+    const policy = createLLMPolicy({ provider: stubProvider('x'), name: 'Claude Bot 1' });
+    expect(policy.name).to.equal('Claude Bot 1');
+    expect(policy.model).to.equal('stub-model');
+  });
+
+  it('falls back without an API key instead of calling out', async function () {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const policy = createLLMPolicy({ provider: 'anthropic' });
+      expect(observation.legalMoves).to.include(await policy.choose(observation));
+    } finally {
+      if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
+    }
+  });
+});
+
+describe('response parsing', function () {
+  it('reads the played_card tag', function () {
+    expect(parseCard('<played_card>J♦</played_card>', ['A♠', 'J♦'])).to.equal('J♦');
+  });
+
+  it('prefers a longer card name over a partial match', function () {
+    expect(parseCard('<played_card>10♣</played_card>', ['10♣', '2♣'])).to.equal('10♣');
+  });
+
+  it('returns null when no legal card is named', function () {
+    expect(parseCard('<played_card>Invalid</played_card>', ['A♠', 'J♦'])).to.be.null;
+  });
+
+  it('extracts tag content and tolerates malformed XML', function () {
+    expect(extractTag('<reasoning>This is my thinking</reasoning>', 'reasoning'))
+      .to.equal('This is my thinking');
+    expect(extractTag('<reasoning>missing close', 'reasoning')).to.be.null;
+  });
+});
+
+describe('LLMBotPlayer', function () {
+  it('exposes the identity fields the server and bot API read', function () {
+    const bot = new LLMBotPlayer('test1', { provider: stubProvider('x'), handle: 'SmartBot' });
+    expect(bot.id).to.equal('test1');
+    expect(bot.handle).to.equal('SmartBot');
+    expect(bot.socketId).to.equal('llm_bot_test1');
+    expect(bot.llmModel).to.equal('stub-model');
+  });
+
+  it('defaults to the Anthropic provider', function () {
+    const bot = new LLMBotPlayer('test2');
+    expect(bot.llmProvider).to.equal('anthropic');
+    expect(bot.llmModel).to.equal(process.env.ANTHROPIC_MODEL || DEFAULT_MODELS.anthropic);
+  });
+
+  it('plays a legal card from the legacy game object', async function () {
+    const provider = stubProvider('<played_card>Q♠</played_card>');
+    const bot = new LLMBotPlayer('test3', { provider });
+    const card = await bot.selectCard(HAND, [{ player: 'p4', card: '2♠' }], legacyGameState());
+    expect(card).to.equal('Q♠');
+    expect(provider.calls[0]).to.not.include('3♠');
+  });
+
+  it('plays a legal card from an engine observation', async function () {
+    const provider = stubProvider('<played_card>9♦</played_card>');
+    const bot = new LLMBotPlayer('test4', { provider });
+    const observation = {
+      playerId: 'p1',
+      playerIds: ['p1', 'p2', 'p3', 'p4'],
+      hand: ['9♦', '3♣'],
+      legalMoves: ['9♦', '3♣'],
+      trick: [],
+      leader: 'p1',
+      trickNumber: 12,
+      handNumber: 1,
+      exposed: [],
+      collected: { p1: [], p2: [], p3: [], p4: [] },
+      handCounts: { p1: 2, p2: 2, p3: 2, p4: 2 },
+      totals: { p1: 0, p2: 0, p3: 0, p4: 0 },
+      teamTotals: null,
+      teammate: 'p3',
+      variant: 'standard',
+    };
+    const card = await bot.selectCard(observation.hand, [], { observation });
+    expect(card).to.equal('9♦');
+  });
+
+  it('still returns a legal card when everything about the model fails', async function () {
+    const bot = new LLMBotPlayer('test5', {
+      provider: { async generateResponse() { throw new Error('down'); } },
+    });
+    const card = await bot.selectCard(HAND, [{ player: 'p4', card: '2♠' }], legacyGameState());
+    expect(['A♠', 'Q♠']).to.include(card);
+  });
+});
+
+describe('provider factory', function () {
+  it('passes an injected provider object straight through', function () {
+    const provider = stubProvider('x');
+    expect(createLLMProvider(provider)).to.equal(provider);
+  });
+
+  it('builds each named provider with a current default model', function () {
+    expect(createLLMProvider('google', {}).model)
+      .to.equal(process.env.GOOGLE_MODEL || DEFAULT_MODELS.google);
+    expect(createLLMProvider('openrouter', {}).model)
+      .to.equal(process.env.OPENROUTER_MODEL || DEFAULT_MODELS.openrouter);
+  });
+
+  it('rejects an unknown provider name', function () {
+    expect(() => createLLMProvider('nope')).to.throw(/Unknown LLM provider/);
+  });
+});
+
+describe('LLM policy against the engine', function () {
+  const engine = require('../src/engine');
+
+  it('plays a full hand from real engine observations', async function () {
+    const playerIds = ['n', 'e', 's', 'w'];
+    let match = engine.startHand(engine.createMatch({
+      playerIds,
+      seed: 'llm-policy',
+      options: { teams: { team1: ['n', 's'], team2: ['e', 'w'] } },
+    }));
+
+    // Answer with the last legal move the prompt offered, so the model path rather than
+    // the heuristic fallback drives every play.
+    const policy = createLLMPolicy({
+      provider: {
+        async generateResponse(prompt) {
+          const legal = prompt.match(/LEGAL PLAYS[^:]*: (.+)/)[1].split(', ');
+          return `<played_card>${legal[legal.length - 1]}</played_card>`;
+        },
+      },
     });
 
-    it('should detect card ranks correctly', function() {
-      const bot = new LLMBotPlayer('test20');
-      expect(bot.getRank('A♠')).to.equal('A');
-      expect(bot.getRank('10♥')).to.equal('10');
-      expect(bot.getRank('J♦')).to.equal('J');
-    });
+    while (match.phase === 'playing') {
+      const turn = match.hand.turn;
+      const observation = engine.observation(match, turn);
+      const card = await policy.choose(observation);
+      expect(observation.legalMoves).to.include(card);
+      match = engine.playCard(match, turn, card).match;
+    }
 
-    it('should detect penalty cards in tricks', function() {
-      const bot = new LLMBotPlayer('test21');
-      const trickWithPenalty = [{ player: 'player1', card: 'Q♠' }];
-      const trickWithHeart = [{ player: 'player1', card: '5♥' }];
-      const trickSafe = [{ player: 'player1', card: '7♣' }];
-      
-      expect(bot.trickHasPenaltyCards(trickWithPenalty)).to.be.true;
-      expect(bot.trickHasPenaltyCards(trickWithHeart)).to.be.true;
-      expect(bot.trickHasPenaltyCards(trickSafe)).to.be.false;
-    });
-
-    it('should detect Jack of Diamonds in tricks', function() {
-      const bot = new LLMBotPlayer('test22');
-      const trickWithJack = [{ player: 'player1', card: 'J♦' }];
-      const trickWithoutJack = [{ player: 'player1', card: '7♣' }];
-      
-      expect(bot.trickHasJackDiamonds(trickWithJack)).to.be.true;
-      expect(bot.trickHasJackDiamonds(trickWithoutJack)).to.be.false;
-    });
+    expect(match.results).to.have.length(1);
   });
 });
