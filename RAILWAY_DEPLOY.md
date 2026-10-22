@@ -23,10 +23,6 @@ These need dashboard or CLI write access and cannot be done from a pull request.
   backend).
 - **Migrate to Railpack and Infrastructure as Code before 2026-12-01**, when
   `railway.json` config-as-code stops working. See [Builder migration](#builder-migration).
-- **Decide the fate of the Redis service and its `accomplished-volume`.** Both are
-  provisioned and running; no code in this repo opens a Redis connection. Either delete
-  the service (which is what detaches and removes the volume) or claim it for room state
-  that survives a redeploy. It bills either way.
 
 ## Environment variables
 
@@ -51,10 +47,6 @@ Frontend (`gongzhu-frontend`):
 | Variable | Notes |
 |---|---|
 | `REACT_APP_BACKEND_URL` | Backend origin. Read at **build time** by react-scripts, so a change needs a redeploy, not a restart. **Falls back to `http://localhost:4000` when unset**, which ships a bundle pointing at the visitor's own machine |
-
-The frontend service also carries `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`. Nothing
-under `frontend/` reads them and only `REACT_APP_*` names reach the bundle; remove them
-when the key is rotated.
 
 ## Build configuration
 
@@ -103,12 +95,12 @@ Do this on a branch and merge it deliberately — a merge to `main` deploys imme
    railway config plan           # confirm the diff touches only these two services
    railway config migrate --apply
    ```
-   The plan covers the whole project, Redis included. Read it for unexpected deletions.
+   The plan covers the whole project. Read it for unexpected deletions.
 6. Delete both `railway.json` files, clear any custom config file path in service
-   settings, and **rotate `ANTHROPIC_API_KEY`** — Nixpacks passed build variables as
-   Docker build args (`SecretsUsedInArgOrEnv: ANTHROPIC_API_KEY` in the build log), so
-   the current key is written into image layers. Rotating before this step just bakes
-   the new key into new layers.
+   settings, and **rotate the backend's provider key** (`OPENROUTER_API_KEY`) — Nixpacks
+   passes service variables as Docker build args (`SecretsUsedInArgOrEnv` in the build
+   log), so the current key is written into image layers. Rotating before this step just
+   bakes the new key into new layers.
 
 ## CLI
 
